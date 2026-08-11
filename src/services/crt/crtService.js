@@ -1,3 +1,99 @@
+// ============================================================
+// OnePERCENT CRT SERVICE
+// ============================================================
+//
+// PRIMARY PURPOSE:
+//
+//   Rachel T Fractal / CRT Confirmation
+//
+// MARKET:
+//
+//   MEXC FUTURES ONLY
+//
+// ============================================================
+//
+// IMPORTANT ARCHITECTURE:
+//
+//   crtService.js
+//       |
+//       +--> MEXC Futures candles
+//       |
+//       +--> determine ACTUAL candle close locally
+//       |
+//       +--> remove currently-forming candle
+//       |
+//       +--> crtEngine.js
+//               |
+//               +--> Rachel T Fractal
+//               +--> Fractal Confirmation
+//               +--> CRT Confirmation
+//               +--> Market Structure
+//               +--> STD Deviation
+//               +--> Liquidity Sweep
+//               +--> RSI
+//
+// NO TRADINGVIEW API
+//
+// MEXC is the ONLY market data source.
+//
+// ============================================================
+//
+// IMPORTANT TIMEFRAME RULE:
+//
+// The service does NOT guess candle closure.
+//
+// For every MEXC candle:
+//
+//     candleCloseTime = candleOpenTime + timeframeDuration
+//
+// The candle is considered CLOSED only when:
+//
+//     currentTime >= candleCloseTime
+//
+// Therefore:
+//
+//     15m candle -> evaluated after its 15m close
+//     1h candle  -> evaluated after its 1h close
+//     4h candle  -> evaluated after its 4h close
+//     1d candle  -> evaluated after its daily close
+//
+// ============================================================
+//
+// IMPORTANT FRACTAL RULE:
+//
+// Rachel T uses:
+//
+//     Pivot = [2]
+//
+// and requires two candles after the pivot.
+//
+// Example:
+//
+//     Candle A
+//     Candle B
+//     PIVOT
+//     Confirm Candle 1
+//     Confirm Candle 2
+//
+// Only after the required candles are CLOSED can the fractal
+// become confirmed.
+//
+// ============================================================
+//
+// IMPORTANT:
+//
+// The service NEVER creates a CRT signal by itself.
+//
+// buildSignal() from crtEngine.js is the authority.
+//
+// If buildSignal() returns null:
+//
+//     NO CONFIRMED CRT
+//
+// Nothing is sent to Discord.
+//
+// ============================================================
+
 import { EmbedBuilder } from 'discord.js';
 import botConfig from '../../config/bot.js';
 
@@ -12,60 +108,19 @@ import {
 import { isNewSignal } from './signalManager.js';
 
 // ============================================================
-// OnePercent CRT SERVICE
-// ============================================================
-//
-// PRIMARY PURPOSE:
-//
-//   Rachel T Fractal / CRT Confirmation
-//
-// MARKET:
-//
-//   MEXC FUTURES ONLY
-//
-// The Rachel T Fractal confirmation is the PRIMARY signal.
-//
-// Supporting information:
-//
-//   • Market Structure
-//   • STD Deviation
-//   • Fractal
-//   • Liquidity Sweep
-//   • RSI
-//
-// The service DOES NOT calculate another CRT.
-// The service DOES NOT calculate another liquidity sweep.
-//
-// crtEngine.js is responsible for generating:
-//
-//   • Rachel T fractal
-//   • CRT confirmation
-//   • Market structure
-//   • STD deviation
-//   • liquidity sweep
-//   • RSI
-//
-// crtService.js only:
-//
-//   1. Gets MEXC Futures candles
-//   2. Removes the still-forming candle
-//   3. Sends candles to crtEngine.js
-//   4. Receives the confirmed signal
-//   5. Displays the signal in Discord
-//
-// IMPORTANT:
-//
-//   SPOT IS COMPLETELY DISABLED.
-//
-//   This service will ONLY scan:
-//      MEXC FUTURES
-//
+// CONFIGURATION
 // ============================================================
 
-const CRT_CONFIG = botConfig.crt || {};
+const CRT_CONFIG =
+  botConfig.crt || {};
 
 // ============================================================
 // TIMEFRAMES
+// ============================================================
+//
+// These are the ONLY timeframes scanned by this service unless
+// explicitly configured in bot.js.
+//
 // ============================================================
 
 const TIMEFRAMES =
@@ -85,18 +140,18 @@ const CHANNELS =
 
 // ============================================================
 // MARKET TYPE
+// ============================================================
 //
 // HARD LOCK:
 //
-//   MEXC FUTURES ONLY
+//     MEXC FUTURES ONLY
 //
-// Even if bot.js contains:
-//
-//   markets: 'spot,futures'
-//
-// this service will still use FUTURES ONLY.
+// There is intentionally NO spot market.
 //
 // ============================================================
+
+const MARKET_TYPE =
+  'futures';
 
 const MARKET_TYPES = [
   'futures',
@@ -104,6 +159,15 @@ const MARKET_TYPES = [
 
 // ============================================================
 // SCAN INTERVAL
+// ============================================================
+//
+// The monitor may wake up every 15 seconds.
+//
+// This DOES NOT mean it generates a signal every 15 seconds.
+//
+// The candle-close gate below decides whether a new candle has
+// actually closed.
+//
 // ============================================================
 
 const SCAN_INTERVAL =
@@ -117,9 +181,6 @@ const SCAN_INTERVAL =
 
 // ============================================================
 // KLINE LIMIT
-//
-// Rachel T fractal confirmation needs historical candles.
-// 100 is a safe default.
 // ============================================================
 
 const KLINE_LIMIT =
@@ -177,14 +238,167 @@ const AUTO_SYMBOLS =
 // STATE
 // ============================================================
 
-let monitorStarted = false;
+let monitorStarted =
+  false;
 
-let scanRunning = false;
+let scanRunning =
+  false;
 
 let cachedSymbols =
   new Map();
 
-let lastSymbolRefresh = 0;
+let lastSymbolRefresh =
+  0;
+
+// ============================================================
+// CANDLE PROCESSING STATE
+// ============================================================
+//
+// This is extremely important.
+//
+// Key:
+//
+//     futures:BTC_USDT:15m
+//
+// Value:
+//
+//     timestamp of the last CLOSED candle that was processed
+//
+// This prevents the same closed candle from being evaluated
+// over and over again during the scan interval.
+//
+// ============================================================
+
+const lastProcessedCandle =
+  new Map();
+
+// ============================================================
+// SIGNAL PROCESSING STATE
+// ============================================================
+//
+// This additional state protects against repeated processing
+// when the exchange returns identical candle data.
+//
+// ============================================================
+
+const lastConfirmedCandle =
+  new Map();
+
+// ============================================================
+// TIMEFRAME PRIORITY
+// ============================================================
+//
+// Lower timeframe first.
+//
+// ============================================================
+
+const TIMEFRAME_PRIORITY = [
+  '5m',
+  '15m',
+  '30m',
+  '1h',
+  '4h',
+  '1d',
+];
+
+// ============================================================
+// GET TIMEFRAME MINUTES
+// ============================================================
+
+function getTimeframeMinutes(
+  timeframe
+) {
+  const configured =
+    Number(
+      TIMEFRAMES[
+        timeframe
+      ]
+    );
+
+  if (
+    Number.isFinite(
+      configured
+    ) &&
+    configured > 0
+  ) {
+    return configured;
+  }
+
+  const match =
+    String(
+      timeframe || ''
+    )
+      .trim()
+      .toLowerCase()
+      .match(
+        /^(\d+)(m|h|d)$/
+      );
+
+  if (!match) {
+    return null;
+  }
+
+  const value =
+    Number(
+      match[1]
+    );
+
+  const unit =
+    match[2];
+
+  if (
+    !Number.isFinite(
+      value
+    )
+  ) {
+    return null;
+  }
+
+  if (
+    unit === 'm'
+  ) {
+    return value;
+  }
+
+  if (
+    unit === 'h'
+  ) {
+    return value * 60;
+  }
+
+  if (
+    unit === 'd'
+  ) {
+    return value * 1440;
+  }
+
+  return null;
+}
+
+// ============================================================
+// GET TIMEFRAME MILLISECONDS
+// ============================================================
+
+function getTimeframeMs(
+  timeframe
+) {
+  const minutes =
+    getTimeframeMinutes(
+      timeframe
+    );
+
+  if (
+    !minutes
+  ) {
+    return null;
+  }
+
+  return (
+    minutes *
+    60 *
+    1000
+  );
+}
 
 // ============================================================
 // TIMEFRAME LABEL
@@ -195,14 +409,29 @@ function timeframeLabel(
 ) {
   return (
     {
-      '5m': '5 MINUTES',
-      '15m': '15 MINUTES',
-      '30m': '30 MINUTES',
-      '1h': '1 HOUR',
-      '4h': '4 HOURS',
-      '1d': 'DAILY',
-    }[timeframe] ||
-    String(timeframe)
+      '5m':
+        '5 MINUTES',
+
+      '15m':
+        '15 MINUTES',
+
+      '30m':
+        '30 MINUTES',
+
+      '1h':
+        '1 HOUR',
+
+      '4h':
+        '4 HOURS',
+
+      '1d':
+        'DAILY',
+    }[
+      timeframe
+    ] ||
+    String(
+      timeframe
+    )
   );
 }
 
@@ -214,27 +443,357 @@ function fmtNumber(
   value,
   decimals = 2
 ) {
-  const number =
-    Number(value);
+  const numeric =
+    Number(
+      value
+    );
 
   if (
-    !Number.isFinite(number)
+    !Number.isFinite(
+      numeric
+    )
   ) {
     return 'N/A';
   }
 
-  return number.toFixed(
+  return numeric.toFixed(
     decimals
   );
 }
 
 // ============================================================
+// NORMALIZE TIMESTAMP
+// ============================================================
+//
+// MEXC normally provides milliseconds.
+//
+// This also supports seconds in case mexcService.js returns
+// timestamps in seconds.
+//
+// ============================================================
+
+function normalizeTimestamp(
+  value
+) {
+  const numeric =
+    Number(
+      value
+    );
+
+  if (
+    !Number.isFinite(
+      numeric
+    ) ||
+    numeric <= 0
+  ) {
+    return null;
+  }
+
+  if (
+    numeric < 100000000000
+  ) {
+    return (
+      numeric * 1000
+    );
+  }
+
+  return numeric;
+}
+
+// ============================================================
+// GET CANDLE OPEN TIME
+// ============================================================
+
+function getCandleOpenTime(
+  candle
+) {
+  if (
+    !candle
+  ) {
+    return null;
+  }
+
+  const candidates = [
+    candle.openTime,
+    candle.open_time,
+    candle.timestamp,
+    candle.time,
+    candle.ts,
+    candle.startTime,
+    candle.start_time,
+  ];
+
+  for (
+    const value of
+    candidates
+  ) {
+    const timestamp =
+      normalizeTimestamp(
+        value
+      );
+
+    if (
+      timestamp !== null
+    ) {
+      return timestamp;
+    }
+  }
+
+  return null;
+}
+
+// ============================================================
+// GET CANDLE CLOSE TIME
+// ============================================================
+//
+// The exchange candle timestamp represents the beginning of
+// the candle.
+//
+// Therefore:
+//
+//     close = open + timeframe
+//
+// ============================================================
+
+function getCandleCloseTime(
+  candle,
+  timeframe
+) {
+  const openTime =
+    getCandleOpenTime(
+      candle
+    );
+
+  const timeframeMs =
+    getTimeframeMs(
+      timeframe
+    );
+
+  if (
+    openTime === null ||
+    timeframeMs === null
+  ) {
+    return null;
+  }
+
+  return (
+    openTime +
+    timeframeMs
+  );
+}
+
+// ============================================================
+// IS CANDLE CLOSED
+// ============================================================
+//
+// This is the primary candle-close protection.
+//
+// We do NOT rely only on:
+//
+//     candle.closed
+//
+// because MEXC data may not always expose that property.
+//
+// ============================================================
+
+function isCandleClosed(
+  candle,
+  timeframe,
+  now = Date.now()
+) {
+  if (
+    !candle
+  ) {
+    return false;
+  }
+
+  if (
+    candle.closed ===
+    false
+  ) {
+    return false;
+  }
+
+  const closeTime =
+    getCandleCloseTime(
+      candle,
+      timeframe
+    );
+
+  if (
+    closeTime === null
+  ) {
+    return false;
+  }
+
+  return (
+    now >=
+    closeTime
+  );
+}
+
+// ============================================================
+// GET CLOSED CANDLES
+// ============================================================
+//
+// This function removes the currently forming candle based on
+// the ACTUAL MEXC candle timestamp.
+//
+// ============================================================
+
+function getClosedCandles(
+  candles,
+  timeframe,
+  now = Date.now()
+) {
+  if (
+    !Array.isArray(
+      candles
+    )
+  ) {
+    return [];
+  }
+
+  return candles
+    .filter(
+      (candle) => {
+        if (
+          !candle
+        ) {
+          return false;
+        }
+
+        const open =
+          Number(
+            candle.open
+          );
+
+        const high =
+          Number(
+            candle.high
+          );
+
+        const low =
+          Number(
+            candle.low
+          );
+
+        const close =
+          Number(
+            candle.close
+          );
+
+        if (
+          !Number.isFinite(
+            open
+          ) ||
+          !Number.isFinite(
+            high
+          ) ||
+          !Number.isFinite(
+            low
+          ) ||
+          !Number.isFinite(
+            close
+          )
+        ) {
+          return false;
+        }
+
+        return isCandleClosed(
+          candle,
+          timeframe,
+          now
+        );
+      }
+    )
+    .sort(
+      (a, b) => {
+        const timeA =
+          getCandleOpenTime(
+            a
+          ) || 0;
+
+        const timeB =
+          getCandleOpenTime(
+            b
+          ) || 0;
+
+        return (
+          timeA -
+          timeB
+        );
+      }
+    );
+}
+
+// ============================================================
+// GET LATEST CLOSED CANDLE
+// ============================================================
+
+function getLatestClosedCandle(
+  candles,
+  timeframe
+) {
+  const closed =
+    getClosedCandles(
+      candles,
+      timeframe
+    );
+
+  if (
+    !closed.length
+  ) {
+    return null;
+  }
+
+  return (
+    closed[
+      closed.length - 1
+    ] ||
+    null
+  );
+}
+
+// ============================================================
+// GET CLOSED CANDLE KEY
+// ============================================================
+//
+// Used for preventing repeated evaluation.
+//
+// ============================================================
+
+function buildCandleKey(
+  market,
+  symbol,
+  timeframe,
+  candle
+) {
+  const openTime =
+    getCandleOpenTime(
+      candle
+    );
+
+  if (
+    openTime === null
+  ) {
+    return null;
+  }
+
+  return [
+    market,
+    symbol,
+    timeframe,
+    openTime,
+  ].join(':');
+}
+
+// ============================================================
 // RSI DISPLAY
+// ============================================================
 //
 // No RSI number is displayed.
 //
-// OVERBOUGHT / OVERSOLD = BOLD
-// NEUTRAL = NORMAL
 // ============================================================
 
 function formatRSIState(
@@ -242,8 +801,11 @@ function formatRSIState(
 ) {
   const normalized =
     String(
-      state || 'Neutral'
-    ).trim().toUpperCase();
+      state ||
+        'Neutral'
+    )
+      .trim()
+      .toUpperCase();
 
   if (
     normalized ===
@@ -264,15 +826,6 @@ function formatRSIState(
 
 // ============================================================
 // MARKET STRUCTURE
-//
-// Accept multiple property names so the service remains
-// compatible with crtEngine.js.
-//
-// Priority:
-//
-//   marketStructure
-//   structure
-//   market_structure
 // ============================================================
 
 function getMarketStructure(
@@ -285,7 +838,9 @@ function getMarketStructure(
     '';
 
   const normalized =
-    String(raw)
+    String(
+      raw
+    )
       .trim()
       .toUpperCase();
 
@@ -308,14 +863,6 @@ function getMarketStructure(
 
 // ============================================================
 // STD DEVIATION
-//
-// Accept all names generated by crtEngine.js.
-//
-// Priority:
-//
-//   stdDeviation
-//   stdDev
-//   standardDeviation
 // ============================================================
 
 function getStdDeviation(
@@ -334,14 +881,6 @@ function getStdDeviation(
 
 // ============================================================
 // FRACTAL TYPE
-//
-// Rachel T fractal is PRIMARY.
-//
-// Accept:
-//
-//   fractalType
-//   fractal.type
-//   type
 // ============================================================
 
 function getFractalType(
@@ -354,7 +893,9 @@ function getFractalType(
     '';
 
   const normalized =
-    String(raw)
+    String(
+      raw
+    )
       .trim()
       .toUpperCase();
 
@@ -385,15 +926,12 @@ function getFractalType(
 
 // ============================================================
 // LIQUIDITY SWEEP
+// ============================================================
 //
-// IMPORTANT:
+// The service does NOT calculate liquidity.
 //
-// crtEngine.js is responsible for generating liquiditySweep.
+// crtEngine.js is the authority.
 //
-// The service DOES NOT calculate another sweep.
-//
-// This prevents the service from overriding the engine's
-// Rachel T fractal interpretation.
 // ============================================================
 
 function getLiquiditySweep(
@@ -423,56 +961,70 @@ function getLiquiditySweep(
   ) {
     const type =
       String(
-        sweep.type || ''
+        sweep.type ||
+          ''
       ).toUpperCase();
 
     if (
-      type === 'HIGH'
+      type ===
+      'HIGH'
     ) {
-      return '**PREVIOUS HIGH SWEPT**';
+      return (
+        '**PREVIOUS FRACTAL HIGH SWEPT**'
+      );
     }
 
     if (
-      type === 'LOW'
+      type ===
+      'LOW'
     ) {
-      return '**PREVIOUS LOW SWEPT**';
+      return (
+        '**PREVIOUS FRACTAL LOW SWEPT**'
+      );
     }
 
-    return '**LIQUIDITY SWEPT**';
+    return (
+      '**LIQUIDITY SWEPT**'
+    );
   }
 
   return 'None';
 }
 
 // ============================================================
-// CRT CONFIRMATION
+// CONFIRMED SIGNAL
+// ============================================================
 //
-// The signal only reaches this service after buildSignal()
-// confirms the Rachel T fractal + CRT condition.
+// A signal must be explicitly confirmed.
 //
-// Still support explicit confirmation fields for compatibility.
 // ============================================================
 
 function isConfirmedSignal(
   signal
 ) {
   if (
-    signal?.confirmed ===
-    false
+    !signal
   ) {
     return false;
   }
 
   if (
-    signal?.confirmedCRT ===
-    false
+    signal.confirmed !==
+    true
   ) {
     return false;
   }
 
   if (
-    signal?.crtConfirmed ===
-    false
+    signal.confirmedCRT !==
+    true
+  ) {
+    return false;
+  }
+
+  if (
+    signal.crtConfirmed !==
+    true
   ) {
     return false;
   }
@@ -525,10 +1077,6 @@ function structureEmoji(
 
 // ============================================================
 // EMBED COLOR
-//
-// BULLISH = GREEN
-// BEARISH = RED
-// UNKNOWN = YELLOW
 // ============================================================
 
 function signalColor(
@@ -558,26 +1106,14 @@ function signalColor(
 
 // ============================================================
 // COIN SYMBOL FORMATTER
-//
-// Examples:
-//
-// BTC_USDT -> BTC
-// BTC-USDT -> BTC
-// BTCUSDT  -> BTC
-// BTC_USD  -> BTC
-// BTCUSD   -> BTC
-//
-// Also handles MEXC Futures symbols such as:
-//
-// BTC_USDT
-//
 // ============================================================
 
 function formatCoin(
   symbol
 ) {
   return String(
-    symbol || 'UNKNOWN'
+    symbol ||
+      'UNKNOWN'
   )
     .replace(
       /[-_]USDT$/i,
@@ -604,20 +1140,12 @@ function formatCoin(
 
 // ============================================================
 // CREATE CRT EMBED
+// ============================================================
 //
-// PRIMARY:
+// IMPORTANT:
 //
-//   Rachel T CRT Confirmation
+// NO FRACTAL PRICE.
 //
-// SUPPORTING:
-//
-//   Market Structure
-//   STD Deviation
-//   Fractal
-//   Liquidity
-//   RSI
-//
-// NO FRACTAL PRICE
 // ============================================================
 
 function createSignalEmbed(
@@ -678,7 +1206,7 @@ function createSignalEmbed(
     // ========================================================
 
     .setDescription(
-      '**OnePERCENT CRT SIGNAL**'
+      '**OnePERCENT CRT Signal**'
     )
 
     // ========================================================
@@ -686,7 +1214,6 @@ function createSignalEmbed(
     // ========================================================
 
     .addFields(
-
       {
         name:
           'Source',
@@ -776,7 +1303,6 @@ function createSignalEmbed(
         inline:
           true,
       }
-
     )
 
     // ========================================================
@@ -799,12 +1325,21 @@ function createSignalEmbed(
     })
 
     // ========================================================
-    // CANDLE TIME
+    // TIMESTAMP
+    //
+    // Prefer the actual CRT candle close/confirmation time.
     // ========================================================
 
     .setTimestamp(
       new Date(
-        signal.candleTime
+        getCandleOpenTime(
+          signal.crtCandle
+        ) ??
+          getCandleOpenTime(
+            signal.confirmationCandle
+          ) ??
+          signal.candleTime ??
+          Date.now()
       )
     );
 }
@@ -822,7 +1357,9 @@ async function sendSignal(
       signal.timeframe
     ];
 
-  if (!channelId) {
+  if (
+    !channelId
+  ) {
     console.warn(
       `[CRT] No Discord channel configured for ${signal.timeframe}`
     );
@@ -871,22 +1408,18 @@ async function sendSignal(
 
 // ============================================================
 // FILTER FUTURES SYMBOLS
+// ============================================================
 //
-// MEXC FUTURES ONLY
+// HARD LOCK:
 //
-// No Spot symbols are accepted here.
+//     FUTURES ONLY
+//
 // ============================================================
 
 function filterSymbols(
   symbols,
   market
 ) {
-  // ----------------------------------------------------------
-  // HARD SAFETY CHECK
-  //
-  // This function must NEVER process Spot.
-  // ----------------------------------------------------------
-
   if (
     market !==
     'futures'
@@ -909,11 +1442,16 @@ function filterSymbols(
       .slice(
         0,
         MAX_SYMBOLS
+      )
+      .filter(
+        Boolean
       );
   }
 
   if (
-    !Array.isArray(symbols)
+    !Array.isArray(
+      symbols
+    )
   ) {
     return [];
   }
@@ -933,7 +1471,9 @@ function filterSymbols(
             ? item
             : item?.symbol;
 
-        if (!symbol) {
+        if (
+          !symbol
+        ) {
           return false;
         }
 
@@ -941,10 +1481,6 @@ function filterSymbols(
           String(
             symbol
           ).toUpperCase();
-
-        // ----------------------------------------------------
-        // MEXC FUTURES ONLY
-        // ----------------------------------------------------
 
         const quoteCoin =
           String(
@@ -959,7 +1495,7 @@ function filterSymbols(
             `_${quote}`
           ) ||
           normalized.endsWith(
-            `${quote}`
+            quote
           )
         );
       }
@@ -977,15 +1513,16 @@ function filterSymbols(
           ? item
           : item.symbol
     )
-    .filter(Boolean);
+    .filter(
+      Boolean
+    );
 }
 
 // ============================================================
 // REFRESH FUTURES SYMBOLS
+// ============================================================
 //
-// ONLY MEXC FUTURES CONTRACTS ARE LOADED.
-//
-// There is intentionally NO getSpotSymbols() call.
+// NO SPOT API.
 //
 // ============================================================
 
@@ -1001,37 +1538,31 @@ async function refreshSymbols(
   if (
     !force &&
     Date.now() -
-        lastSymbolRefresh <
+      lastSymbolRefresh <
       ttl &&
     cachedSymbols.size
   ) {
     return;
   }
 
-  // ==========================================================
-  // MEXC FUTURES ONLY
-  // ==========================================================
-
   try {
     const contracts =
       await getFuturesContracts();
 
-    cachedSymbols.set(
-      'futures',
+    const futuresSymbols =
       filterSymbols(
         contracts,
         'futures'
-      )
+      );
+
+    cachedSymbols.set(
+      'futures',
+      futuresSymbols
     );
 
     console.log(
-      `[CRT] MEXC Futures symbols loaded: ${
-        cachedSymbols.get(
-          'futures'
-        )?.length || 0
-      }`
+      `[CRT] MEXC Futures symbols loaded: ${futuresSymbols.length}`
     );
-
   } catch (
     error
   ) {
@@ -1052,25 +1583,162 @@ async function refreshSymbols(
 }
 
 // ============================================================
+// SHOULD PROCESS CLOSED CANDLE
+// ============================================================
+//
+// This is the major anti-duplicate / timing gate.
+//
+// A symbol/timeframe is evaluated only when a NEW closed candle
+// appears.
+//
+// ============================================================
+
+function shouldProcessClosedCandle(
+  market,
+  symbol,
+  timeframe,
+  candle
+) {
+  const key =
+    buildCandleKey(
+      market,
+      symbol,
+      timeframe,
+      candle
+    );
+
+  if (
+    !key
+  ) {
+    return false;
+  }
+
+  const openTime =
+    getCandleOpenTime(
+      candle
+    );
+
+  const previous =
+    lastProcessedCandle.get(
+      key
+    );
+
+  if (
+    previous ===
+    openTime
+  ) {
+    return false;
+  }
+
+  lastProcessedCandle.set(
+    key,
+    openTime
+  );
+
+  return true;
+}
+
+// ============================================================
+// GET SIGNAL STATE KEY
+// ============================================================
+
+function buildSignalStateKey(
+  market,
+  symbol,
+  timeframe
+) {
+  return [
+    market,
+    symbol,
+    timeframe,
+  ].join(':');
+}
+
+// ============================================================
+// CHECK WHETHER CONFIRMED CANDLE WAS ALREADY SENT
+// ============================================================
+
+function wasConfirmedCandleAlreadyHandled(
+  market,
+  symbol,
+  timeframe,
+  candle
+) {
+  const stateKey =
+    buildSignalStateKey(
+      market,
+      symbol,
+      timeframe
+    );
+
+  const candleTime =
+    getCandleOpenTime(
+      candle
+    );
+
+  if (
+    candleTime ===
+    null
+  ) {
+    return true;
+  }
+
+  return (
+    lastConfirmedCandle.get(
+      stateKey
+    ) ===
+    candleTime
+  );
+}
+
+// ============================================================
+// MARK CONFIRMED CANDLE
+// ============================================================
+
+function markConfirmedCandle(
+  market,
+  symbol,
+  timeframe,
+  candle
+) {
+  const stateKey =
+    buildSignalStateKey(
+      market,
+      symbol,
+      timeframe
+    );
+
+  const candleTime =
+    getCandleOpenTime(
+      candle
+    );
+
+  if (
+    candleTime ===
+    null
+  ) {
+    return;
+  }
+
+  lastConfirmedCandle.set(
+    stateKey,
+    candleTime
+  );
+}
+
+// ============================================================
 // SCAN SYMBOL
 // ============================================================
 //
 // IMPORTANT:
 //
-// The service does NOT independently determine whether a CRT
-// exists.
-//
-// crtEngine.js is the authority.
-//
-// If buildSignal() returns null:
-//
-//   No confirmed Rachel T CRT signal.
-//
-// Therefore nothing is sent to Discord.
-//
-// MARKET:
-//
-//   MEXC FUTURES ONLY
+// 1. Get MEXC Futures candles.
+// 2. Determine candle closure locally.
+// 3. Ignore active candle.
+// 4. Process ONLY a newly closed candle.
+// 5. Pass closed history to crtEngine.
+// 6. Engine decides whether CRT is confirmed.
+// 7. Send only confirmed CRT.
 //
 // ============================================================
 
@@ -1081,7 +1749,6 @@ async function scanSymbol(
   timeframe
 ) {
   try {
-
     // ========================================================
     // HARD FUTURES-ONLY SAFETY
     // ========================================================
@@ -1092,6 +1759,10 @@ async function scanSymbol(
     ) {
       return;
     }
+
+    // ========================================================
+    // GET MEXC FUTURES KLINES
+    // ========================================================
 
     const candles =
       await getKlines({
@@ -1109,44 +1780,32 @@ async function scanSymbol(
     if (
       !Array.isArray(
         candles
-      )
+      ) ||
+      !candles.length
     ) {
       return;
     }
 
     // ========================================================
+    // CURRENT TIME
+    // ========================================================
+
+    const now =
+      Date.now();
+
+    // ========================================================
     // CLOSED CANDLES ONLY
-    //
-    // Never allow the currently forming MEXC Futures candle
-    // to become the CRT confirmation candle.
     // ========================================================
 
     const closed =
-      candles.filter(
-        (candle) => {
-          if (
-            candle?.closed ===
-            false
-          ) {
-            return false;
-          }
-
-          const close =
-            Number(
-              candle?.close
-            );
-
-          return Number.isFinite(
-            close
-          );
-        }
+      getClosedCandles(
+        candles,
+        timeframe,
+        now
       );
 
     // ========================================================
     // MINIMUM HISTORY
-    //
-    // Rachel T fractal + RSI + standard deviation require
-    // historical candles.
     // ========================================================
 
     const minimumCandles =
@@ -1164,7 +1823,61 @@ async function scanSymbol(
     }
 
     // ========================================================
+    // LATEST CLOSED CANDLE
+    // ========================================================
+
+    const latestClosed =
+      closed[
+        closed.length - 1
+      ];
+
+    if (
+      !latestClosed
+    ) {
+      return;
+    }
+
+    // ========================================================
+    // SAFETY:
+    //
+    // The latest candle MUST actually be closed.
+    // ========================================================
+
+    if (
+      !isCandleClosed(
+        latestClosed,
+        timeframe,
+        now
+      )
+    ) {
+      return;
+    }
+
+    // ========================================================
+    // NEW CLOSED CANDLE GATE
+    //
+    // If this exact candle has already been processed,
+    // STOP.
+    //
+    // This prevents a daily candle from being scanned every
+    // 30 seconds and producing repeated processing.
+    // ========================================================
+
+    if (
+      !shouldProcessClosedCandle(
+        market,
+        symbol,
+        timeframe,
+        latestClosed
+      )
+    ) {
+      return;
+    }
+
+    // ========================================================
     // BUILD RACHEL T CRT SIGNAL
+    //
+    // crtEngine.js is the authority.
     // ========================================================
 
     const signal =
@@ -1209,19 +1922,30 @@ async function scanSymbol(
       });
 
     // ========================================================
-    // NO CONFIRMED RACHEL T CRT
+    // NO CONFIRMED CRT
     //
-    // This is expected most of the time.
+    // The candle was processed, but there is no confirmed
+    // Rachel T CRT.
+    //
+    // DO NOT SEND ANYTHING.
     // ========================================================
 
-    if (!signal) {
+    if (
+      !signal
+    ) {
+      console.log(
+        `[CRT] No confirmed CRT ${market}:${symbol}:${timeframe} | closed=${new Date(
+          getCandleOpenTime(
+            latestClosed
+          ) || now
+        ).toISOString()}`
+      );
+
       return;
     }
 
     // ========================================================
-    // SAFETY
-    //
-    // The engine must return the actual confirmed CRT candle.
+    // ENGINE CONFIRMATION SAFETY
     // ========================================================
 
     if (
@@ -1229,28 +1953,89 @@ async function scanSymbol(
         signal
       )
     ) {
-      return;
-    }
-
-    // ========================================================
-    // SIGNAL ID
-    //
-    // Prevent duplicate Discord alerts.
-    // ========================================================
-
-    if (
-      !signal.id
-    ) {
       console.warn(
-        `[CRT] Signal rejected because no signal.id was returned: futures:${symbol}:${timeframe}`
+        `[CRT] Engine returned an unconfirmed signal ${market}:${symbol}:${timeframe}`
       );
 
       return;
     }
 
     // ========================================================
-    // NEW SIGNAL CHECK
+    // GET ACTUAL CRT CANDLE
     // ========================================================
+
+    const crtCandle =
+      signal.crtCandle ??
+      signal.crtConfirmation
+        ?.signalCandle ??
+      signal.confirmationCandle ??
+      null;
+
+    // ========================================================
+    // SAFETY:
+    //
+    // The CRT candle must itself be CLOSED.
+    //
+    // ========================================================
+
+    if (
+      crtCandle
+    ) {
+      if (
+        !isCandleClosed(
+          crtCandle,
+          timeframe,
+          now
+        )
+      ) {
+        console.warn(
+          `[CRT] Rejected because CRT confirmation candle is not closed: ${market}:${symbol}:${timeframe}`
+        );
+
+        return;
+      }
+    }
+
+    // ========================================================
+    // PREVENT SAME CONFIRMED CANDLE FROM BEING SENT AGAIN
+    // ========================================================
+
+    if (
+      crtCandle &&
+      wasConfirmedCandleAlreadyHandled(
+        market,
+        symbol,
+        timeframe,
+        crtCandle
+      )
+    ) {
+      return;
+    }
+
+    // ========================================================
+    // SIGNAL ID SAFETY
+    // ========================================================
+
+    if (
+      !signal.id
+    ) {
+      console.warn(
+        `[CRT] Signal rejected because no signal.id was returned: ${market}:${symbol}:${timeframe}`
+      );
+
+      return;
+    }
+
+    // ========================================================
+    // GLOBAL SIGNAL MANAGER
+    // ========================================================
+//
+// This is the second duplicate protection.
+//
+// Even if the service restarts its local candle state,
+// signalManager.js can still reject an already-known signal
+// depending on its implementation.
+//
 
     if (
       !isNewSignal(
@@ -1270,18 +2055,48 @@ async function scanSymbol(
     );
 
     // ========================================================
+    // MARK CONFIRMED CANDLE
+    // ========================================================
+
+    if (
+      crtCandle
+    ) {
+      markConfirmedCandle(
+        market,
+        symbol,
+        timeframe,
+        crtCandle
+      );
+    }
+
+    // ========================================================
     // LOG
     // ========================================================
 
     console.log(
-      `[CRT] RACHEL T CONFIRMED futures:${symbol}:${timeframe}` +
-      ` | Structure=${getMarketStructure(signal)}` +
-      ` | Fractal=${getFractalType(signal)}` +
-      ` | STD=${getStdDeviation(signal)}` +
-      ` | Liquidity=${getLiquiditySweep(signal)}` +
-      ` | RSI=${signal.rsiState || 'Neutral'}`
+      `[CRT] RACHEL T CONFIRMED ${market}:${symbol}:${timeframe}` +
+        ` | Closed=${new Date(
+          getCandleOpenTime(
+            latestClosed
+          ) || now
+        ).toISOString()}` +
+        ` | Structure=${getMarketStructure(
+          signal
+        )}` +
+        ` | Fractal=${getFractalType(
+          signal
+        )}` +
+        ` | STD=${getStdDeviation(
+          signal
+        )}` +
+        ` | Liquidity=${getLiquiditySweep(
+          signal
+        )}` +
+        ` | RSI=${
+          signal.rsiState ||
+          'Neutral'
+        }`
     );
-
   } catch (
     error
   ) {
@@ -1294,14 +2109,52 @@ async function scanSymbol(
 }
 
 // ============================================================
+// SORT TIMEFRAMES BY PRIORITY
+// ============================================================
+
+function getOrderedTimeframes() {
+  const configured =
+    Object.keys(
+      TIMEFRAMES
+    );
+
+  return configured.sort(
+    (a, b) => {
+      const indexA =
+        TIMEFRAME_PRIORITY.indexOf(
+          a
+        );
+
+      const indexB =
+        TIMEFRAME_PRIORITY.indexOf(
+          b
+        );
+
+      const safeA =
+        indexA === -1
+          ? 999
+          : indexA;
+
+      const safeB =
+        indexB === -1
+          ? 999
+          : indexB;
+
+      return (
+        safeA -
+        safeB
+      );
+    }
+  );
+}
+
+// ============================================================
 // SCAN ALL
 // ============================================================
 //
 // Sequential scanning is intentional.
 //
-// This prevents a large burst of requests to MEXC.
-//
-// Priority order:
+// Priority:
 //
 //   5m
 //   15m
@@ -1310,9 +2163,7 @@ async function scanSymbol(
 //   4h
 //   1d
 //
-// IMPORTANT:
-//
-//   ONLY MEXC FUTURES.
+// Only configured timeframes are actually scanned.
 //
 // ============================================================
 
@@ -1335,24 +2186,21 @@ async function scanAll(
 
     await refreshSymbols();
 
-    const timeframes =
-      Object.keys(
-        TIMEFRAMES
-      );
-
     // ========================================================
     // TIMEFRAME PRIORITY
+    // ========================================================
+
+    const timeframes =
+      getOrderedTimeframes();
+
+    // ========================================================
+    // SCAN TIMEFRAMES
     // ========================================================
 
     for (
       const timeframe of
       timeframes
     ) {
-
-      // ======================================================
-      // FUTURES ONLY
-      // ======================================================
-
       const market =
         'futures';
 
@@ -1362,14 +2210,13 @@ async function scanAll(
         ) || [];
 
       // ======================================================
-      // SCAN EVERY MEXC FUTURES SYMBOL
+      // SCAN EVERY FUTURES SYMBOL
       // ======================================================
 
       for (
         const symbol of
         symbols
       ) {
-
         await scanSymbol(
           client,
           market,
@@ -1378,7 +2225,6 @@ async function scanAll(
         );
       }
     }
-
   } catch (
     error
   ) {
@@ -1387,7 +2233,6 @@ async function scanAll(
       error?.message ||
         error
     );
-
   } finally {
     scanRunning =
       false;
@@ -1420,7 +2265,9 @@ export function startCRTMonitor(
     return;
   }
 
-  if (!client) {
+  if (
+    !client
+  ) {
     throw new Error(
       'Discord client is required for CRT monitor'
     );
@@ -1428,6 +2275,10 @@ export function startCRTMonitor(
 
   monitorStarted =
     true;
+
+  console.log(
+    '[CRT] =================================================='
+  );
 
   console.log(
     '[CRT] Signal monitor started.'
@@ -1442,27 +2293,45 @@ export function startCRTMonitor(
   );
 
   console.log(
-    `[CRT] PRIMARY SIGNAL: Rachel T Fractal + CRT Confirmation`
+    '[CRT] TRADINGVIEW API: NOT USED'
   );
 
   console.log(
-    `[CRT] Markets: MEXC Futures ONLY`
+    '[CRT] PRIMARY SIGNAL: Rachel T Fractal + CRT Confirmation'
   );
 
   console.log(
-    `[CRT] Timeframes: ${Object.keys(TIMEFRAMES).join(', ')}`
+    `[CRT] Timeframes: ${getOrderedTimeframes().join(
+      ', '
+    )}`
   );
 
   console.log(
-    `[CRT] Scan interval: ${SCAN_INTERVAL}ms; max symbols/market: ${MAX_SYMBOLS}`
+    `[CRT] Scan interval: ${SCAN_INTERVAL}ms`
   );
 
   console.log(
-    `[CRT] Kline history: ${KLINE_LIMIT} candles`
+    `[CRT] Max symbols: ${MAX_SYMBOLS}`
+  );
+
+  console.log(
+    `[CRT] Kline history: ${KLINE_LIMIT}`
   );
 
   console.log(
     `[CRT] Auto symbols: ${AUTO_SYMBOLS}`
+  );
+
+  console.log(
+    '[CRT] Candle confirmation: MEXC timestamp based'
+  );
+
+  console.log(
+    '[CRT] Currently-forming candles: REJECTED'
+  );
+
+  console.log(
+    '[CRT] =================================================='
   );
 
   // ==========================================================
@@ -1499,23 +2368,29 @@ export async function scanCRTNow(
 }
 
 // ============================================================
-// CRT CONFIG
+// GET CRT CONFIG
 // ============================================================
 
 export function getCRTConfig() {
   return {
     // --------------------------------------------------------
-    // HARD LOCKED TO MEXC FUTURES
+    // HARD LOCKED MARKET
     // --------------------------------------------------------
 
     markets: [
       'futures',
     ],
 
+    // --------------------------------------------------------
+    // TIMEFRAMES
+    // --------------------------------------------------------
+
     timeframes:
-      Object.keys(
-        TIMEFRAMES
-      ),
+      getOrderedTimeframes(),
+
+    // --------------------------------------------------------
+    // SCAN
+    // --------------------------------------------------------
 
     scanInterval:
       SCAN_INTERVAL,
@@ -1529,6 +2404,10 @@ export function getCRTConfig() {
     autoSymbols:
       AUTO_SYMBOLS,
 
+    // --------------------------------------------------------
+    // RSI
+    // --------------------------------------------------------
+
     rsi: {
       period:
         RSI_PERIOD,
@@ -1540,8 +2419,16 @@ export function getCRTConfig() {
         OVERBOUGHT,
     },
 
+    // --------------------------------------------------------
+    // SIGNAL
+    // --------------------------------------------------------
+
     primarySignal:
       'RACHEL_T_FRACTAL_CRT',
+
+    // --------------------------------------------------------
+    // SUPPORTING DATA
+    // --------------------------------------------------------
 
     supportingData: [
       'MARKET_STRUCTURE',
@@ -1551,8 +2438,51 @@ export function getCRTConfig() {
       'RSI',
     ],
 
+    // --------------------------------------------------------
+    // SOURCE
+    // --------------------------------------------------------
+
     source:
       'MEXC_FUTURES_ONLY',
+
+    tradingViewApi:
+      false,
+
+    // --------------------------------------------------------
+    // CANDLE TIMING
+    // --------------------------------------------------------
+
+    candleTiming:
+      'MEXC_TIMESTAMP_BASED',
+
+    activeCandleRejected:
+      true,
+
+    processOnlyNewClosedCandle:
+      true,
+
+    // --------------------------------------------------------
+    // FRACTAL
+    // --------------------------------------------------------
+
+    fractalConfirmation:
+      'TWO_CLOSED_CANDLES_AFTER_PIVOT',
+
+    // --------------------------------------------------------
+    // LIQUIDITY
+    // --------------------------------------------------------
+
+    liquiditySource:
+      'CONFIRMED_RACHEL_T_FRACTALS_ONLY',
+
+    liquidityUsesCurrentWick:
+      false,
+
+    liquidityUsesPreviousCandleWick:
+      false,
+
+    liquidityUsesCRTCandle:
+      false,
   };
 }
 
@@ -1561,8 +2491,27 @@ export function getCRTConfig() {
 // ============================================================
 
 console.log(
-  `[CRT] Service loaded • Rachel T Fractal PRIMARY • MEXC FUTURES ONLY • ${Object.keys(
-    TIMEFRAMES
-  ).join(', ')}`
+  `[CRT] Service loaded • Rachel T Fractal PRIMARY • MEXC FUTURES ONLY • ${getOrderedTimeframes().join(
+    ', '
+  )}`
 );
 
+console.log(
+  '[CRT] TradingView API: DISABLED'
+);
+
+console.log(
+  '[CRT] Candle timing: MEXC timestamp based'
+);
+
+console.log(
+  '[CRT] Active candle: REJECTED'
+);
+
+console.log(
+  '[CRT] CRT confirmation: crtEngine.js ONLY'
+);
+
+console.log(
+  '[CRT] Liquidity: confirmed fractal history ONLY'
+);
