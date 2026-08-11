@@ -4,7 +4,8 @@
 //
 // PURPOSE:
 //
-//   Provide normalized MEXC candle data to the CRT system.
+//   Provide normalized MEXC Futures candle data to the CRT
+//   system.
 //
 // MARKET:
 //
@@ -12,59 +13,106 @@
 //
 // IMPORTANT:
 //
-//   MEXC Futures candle timestamps are treated as the
-//   authoritative exchange candle OPEN timestamps.
+//   MEXC Futures is the authoritative source.
 //
-//   Candle CLOSE is calculated from:
+//   Futures endpoint:
 //
-//       openTime + timeframe duration - 1ms
+//      https://contract.mexc.com
+//
+//   Kline endpoint:
+//
+//      /api/v1/contract/kline/{symbol}
+//
+//   MEXC Futures returns candle OPEN timestamps in seconds.
+//
+//   PDYN converts them to milliseconds internally.
+//
+//   Candle boundaries are calculated from the MEXC candle
+//   OPEN timestamp:
+//
+//      closeBoundary = openTime + timeframe duration
+//
+//   closeTime:
+//
+//      closeBoundary - 1ms
 //
 //   NO Asia/Manila offset is applied.
 //
-//   NO local wall-clock candle calculation is used.
-//
-//   This keeps:
-//
-//       5m
-//       15m
-//       30m
-//       1h
-//       4h
-//       1d
-//
-//   aligned to the actual MEXC Futures candle boundaries.
+//   NO local wall-clock timezone conversion is applied.
 //
 // ============================================================
 
 // ============================================================
 // BASE URL
 // ============================================================
+//
+// IMPORTANT:
+//
+// MEXC Futures uses:
+//
+//     https://contract.mexc.com
+//
+// NOT:
+//
+//     https://api.mexc.com
+//
+// ============================================================
+
+const DEFAULT_FUTURES_BASE_URL =
+  'https://contract.mexc.com';
+
+const DEFAULT_SPOT_BASE_URL =
+  'https://api.mexc.com';
+
+const configuredFuturesBase =
+  String(
+    process.env.MEXC_FUTURES_BASE_URL ||
+      DEFAULT_FUTURES_BASE_URL
+  )
+    .trim()
+    .replace(/\/+$/, '');
+
+const configuredSpotBase =
+  String(
+    process.env.MEXC_SPOT_BASE_URL ||
+      DEFAULT_SPOT_BASE_URL
+  )
+    .trim()
+    .replace(/\/+$/, '');
+
+// ============================================================
+// HARD SAFETY
+//
+// If an old deployment still has:
+//
+// MEXC_FUTURES_BASE_URL=https://api.mexc.com
+//
+// automatically redirect it to the correct Futures API.
+//
+// ============================================================
 
 const FUTURES_BASE_URL =
-  process.env.MEXC_FUTURES_BASE_URL ||
-  'https://api.mexc.com';
+  /(^|\/\/)api\.mexc\.com$/i.test(
+    configuredFuturesBase
+  )
+    ? DEFAULT_FUTURES_BASE_URL
+    : configuredFuturesBase;
 
 const SPOT_BASE_URL =
-  process.env.MEXC_SPOT_BASE_URL ||
-  'https://api.mexc.com';
+  configuredSpotBase;
 
 // ============================================================
 // TIMEFRAME DEFINITIONS
 // ============================================================
 //
-// MEXC Futures API interval names:
+// MEXC Futures intervals:
 //
-//   5m  -> Min5
-//   15m -> Min15
-//   30m -> Min30
-//   1h  -> Min60
-//   4h  -> Hour4
-//   1d  -> Day1
-//
-// These are the exchange/API intervals.
-//
-// The left side is what crtService.js / crtEngine.js use.
-// The right side is what MEXC Futures receives.
+//   Min5
+//   Min15
+//   Min30
+//   Min60
+//   Hour4
+//   Day1
 //
 // ============================================================
 
@@ -123,7 +171,9 @@ const SUPPORTED_TIMEFRAMES = [
 // ASSERT TIMEFRAME
 // ============================================================
 
-function assertTimeframe(timeframe) {
+function assertTimeframe(
+  timeframe
+) {
   if (
     !INTERVALS[
       timeframe
@@ -144,7 +194,7 @@ const HTTP_TIMEOUT_MS =
     3000,
     Number(
       process.env.MEXC_HTTP_TIMEOUT_MS ||
-      10000
+        10000
     )
   );
 
@@ -172,8 +222,17 @@ async function requestJson(
         url,
         {
           ...options,
+
           signal:
             controller.signal,
+
+          headers: {
+            Accept:
+              'application/json',
+
+            ...(options.headers ||
+              {}),
+          },
         }
       );
 
@@ -199,11 +258,27 @@ async function requestJson(
     ) {
       throw new Error(
         `MEXC HTTP ${response.status}: ` +
-        JSON.stringify(data)
+        `${JSON.stringify(data)}`
       );
     }
 
     return data;
+
+  } catch (
+    error
+  ) {
+
+    if (
+      error?.name ===
+      'AbortError'
+    ) {
+      throw new Error(
+        `MEXC request timed out after ` +
+        `${HTTP_TIMEOUT_MS}ms`
+      );
+    }
+
+    throw error;
 
   } finally {
     clearTimeout(
@@ -218,10 +293,12 @@ async function requestJson(
 
 function toFiniteNumber(
   value,
-  fallback = 0
+  fallback = NaN
 ) {
   const number =
-    Number(value);
+    Number(
+      value
+    );
 
   return Number.isFinite(
     number
@@ -234,12 +311,15 @@ function toFiniteNumber(
 // NORMALIZE TIMESTAMP
 // ============================================================
 //
-// MEXC Futures returns candle timestamps in seconds.
+// MEXC Futures:
 //
-// Internally PDYN uses milliseconds.
+//     seconds
 //
-// This helper protects against accidental millisecond
-// timestamps as well.
+// PDYN internally:
+//
+//     milliseconds
+//
+// This function safely handles either.
 //
 // ============================================================
 
@@ -247,7 +327,9 @@ function normalizeTimestamp(
   value
 ) {
   const number =
-    Number(value);
+    Number(
+      value
+    );
 
   if (
     !Number.isFinite(
@@ -258,45 +340,38 @@ function normalizeTimestamp(
     return NaN;
   }
 
-  // MEXC Futures normally returns seconds.
-  //
-  // If a millisecond timestamp somehow arrives,
-  // keep it in milliseconds.
-
+  // Seconds timestamp.
   if (
-    number < 100000000000
+    number <
+    100000000000
   ) {
-    return number * 1000;
+    return (
+      number *
+      1000
+    );
   }
 
+  // Already milliseconds.
   return number;
 }
 
 // ============================================================
-// CALCULATE CANDLE BOUNDARY
+// GET CANDLE BOUNDARY
 // ============================================================
 //
 // IMPORTANT:
 //
-// This is NOT calculated from Manila time.
+// The candle OPEN timestamp comes directly from MEXC.
 //
-// It is calculated directly from the MEXC candle's
-// exchange-provided OPEN timestamp.
+// Example 15m:
 //
-// Example:
+//     08:00:00.000
+//             |
+//             +----> 08:15:00.000 boundary
 //
-// 15m candle:
+// Candle closeTime:
 //
-// open = 08:00:00.000
-// close boundary = 08:15:00.000
-//
-// Therefore the candle is closed when:
-//
-// Date.now() >= 08:15:00.000
-//
-// The stored closeTime is:
-//
-// 08:14:59.999
+//     08:14:59.999
 //
 // ============================================================
 
@@ -308,22 +383,54 @@ function getCandleBoundary(
     timeframe
   );
 
+  const normalizedOpen =
+    Number(
+      openTime
+    );
+
+  if (
+    !Number.isFinite(
+      normalizedOpen
+    )
+  ) {
+    return {
+      openTime:
+        NaN,
+
+      closeTime:
+        NaN,
+
+      closeBoundary:
+        NaN,
+
+      intervalMs:
+        INTERVALS[
+          timeframe
+        ].ms,
+    };
+  }
+
   const intervalMs =
     INTERVALS[
       timeframe
     ].ms;
 
   const closeBoundary =
-    openTime +
+    normalizedOpen +
     intervalMs;
 
   const closeTime =
-    closeBoundary - 1;
+    closeBoundary -
+    1;
 
   return {
-    openTime,
+    openTime:
+      normalizedOpen,
+
     closeTime,
+
     closeBoundary,
+
     intervalMs,
   };
 }
@@ -332,11 +439,9 @@ function getCandleBoundary(
 // CLOSED CHECK
 // ============================================================
 //
-// We intentionally use the exact close BOUNDARY:
+// A candle becomes closed at:
 //
-//     now >= closeBoundary
-//
-// rather than relying on a local timezone.
+//     openTime + timeframe duration
 //
 // ============================================================
 
@@ -351,28 +456,39 @@ function isCandleClosed(
       timeframe
     );
 
+  if (
+    !Number.isFinite(
+      boundary.closeBoundary
+    )
+  ) {
+    return false;
+  }
+
   return (
-    now >=
+    Number(now) >=
     boundary.closeBoundary
   );
 }
 
 // ============================================================
-// NORMALIZE FUTURES KLINES
+// NORMALIZE MEXC FUTURES KLINES
 // ============================================================
 //
-// MEXC Futures response:
+// Official MEXC Futures response:
 //
-//   {
+// {
+//   success: true,
+//   code: 0,
+//   data: {
 //      time: [],
 //      open: [],
+//      close: [],
 //      high: [],
 //      low: [],
-//      close: [],
-//      vol: []
+//      vol: [],
+//      amount: []
 //   }
-//
-// Each array uses the same index.
+// }
 //
 // ============================================================
 
@@ -384,52 +500,93 @@ function normalizeFuturesKlines(
     timeframe
   );
 
+  // ----------------------------------------------------------
+  // Accept the normal MEXC object format.
+  // ----------------------------------------------------------
+
+  let source =
+    data;
+
+  // ----------------------------------------------------------
+  // Defensive support if the caller passes the full
+  // response object instead of data.data.
+  // ----------------------------------------------------------
+
+  if (
+    source?.data &&
+    !Array.isArray(
+      source?.time
+    )
+  ) {
+    source =
+      source.data;
+  }
+
+  // ----------------------------------------------------------
+  // MEXC Futures uses parallel arrays.
+  // ----------------------------------------------------------
+
   const times =
     Array.isArray(
-      data?.time
+      source?.time
     )
-      ? data.time
+      ? source.time
       : [];
 
   const opens =
     Array.isArray(
-      data?.open
+      source?.open
     )
-      ? data.open
+      ? source.open
       : [];
 
   const highs =
     Array.isArray(
-      data?.high
+      source?.high
     )
-      ? data.high
+      ? source.high
       : [];
 
   const lows =
     Array.isArray(
-      data?.low
+      source?.low
     )
-      ? data.low
+      ? source.low
       : [];
 
   const closes =
     Array.isArray(
-      data?.close
+      source?.close
     )
-      ? data.close
+      ? source.close
       : [];
 
   const volumes =
     Array.isArray(
-      data?.vol
+      source?.vol
     )
-      ? data.vol
+      ? source.vol
       : [];
+
+  // ----------------------------------------------------------
+  // Validate that the response actually contains candles.
+  // ----------------------------------------------------------
+
+  if (
+    !times.length
+  ) {
+    return [];
+  }
 
   const now =
     Date.now();
 
-  const candles = [];
+  const candles =
+    [];
+
+  // ----------------------------------------------------------
+  // Build normalized candles.
+  // ----------------------------------------------------------
 
   for (
     let i = 0;
@@ -449,34 +606,24 @@ function normalizeFuturesKlines(
       continue;
     }
 
-    const boundary =
-      getCandleBoundary(
-        openTime,
-        timeframe
-      );
-
     const open =
       toFiniteNumber(
-        opens[i],
-        NaN
+        opens[i]
       );
 
     const high =
       toFiniteNumber(
-        highs[i],
-        NaN
+        highs[i]
       );
 
     const low =
       toFiniteNumber(
-        lows[i],
-        NaN
+        lows[i]
       );
 
     const close =
       toFiniteNumber(
-        closes[i],
-        NaN
+        closes[i]
       );
 
     const volume =
@@ -507,7 +654,40 @@ function normalizeFuturesKlines(
     }
 
     // --------------------------------------------------------
-    // Store normalized MEXC Futures candle.
+    // Validate OHLC relationship.
+    //
+    // This prevents malformed API rows from entering the
+    // fractal engine.
+    // --------------------------------------------------------
+
+    if (
+      high <
+      Math.max(
+        open,
+        close
+      )
+    ) {
+      continue;
+    }
+
+    if (
+      low >
+      Math.min(
+        open,
+        close
+      )
+    ) {
+      continue;
+    }
+
+    const boundary =
+      getCandleBoundary(
+        openTime,
+        timeframe
+      );
+
+    // --------------------------------------------------------
+    // Store normalized candle.
     // --------------------------------------------------------
 
     candles.push({
@@ -527,12 +707,9 @@ function normalizeFuturesKlines(
       closeTime:
         boundary.closeTime,
 
-      // Exact boundary used by the service.
       closeBoundary:
         boundary.closeBoundary,
 
-      // True ONLY after the exchange candle's calculated
-      // boundary has passed.
       closed:
         now >=
         boundary.closeBoundary,
@@ -545,7 +722,7 @@ function normalizeFuturesKlines(
   }
 
   // ----------------------------------------------------------
-  // Ensure chronological ordering.
+  // Chronological ordering.
   // ----------------------------------------------------------
 
   candles.sort(
@@ -557,15 +734,44 @@ function normalizeFuturesKlines(
       b.openTime
   );
 
-  return candles;
+  // ----------------------------------------------------------
+  // Remove duplicate MEXC candle opens.
+  // ----------------------------------------------------------
+
+  const unique =
+    [];
+
+  let previousOpen =
+    null;
+
+  for (
+    const candle of
+    candles
+  ) {
+    if (
+      candle.openTime ===
+      previousOpen
+    ) {
+      continue;
+    }
+
+    unique.push(
+      candle
+    );
+
+    previousOpen =
+      candle.openTime;
+  }
+
+  return unique;
 }
 
 // ============================================================
 // NORMALIZE SPOT KLINES
 //
-// Kept for compatibility with other parts of the project.
+// Compatibility only.
 //
-// CRT SERVICE MUST NOT USE THIS.
+// CRT SERVICE DOES NOT USE SPOT.
 //
 // ============================================================
 
@@ -598,38 +804,44 @@ function normalizeSpotKlines(
             row?.[6]
           );
 
+        const open =
+          toFiniteNumber(
+            row?.[1]
+          );
+
+        const high =
+          toFiniteNumber(
+            row?.[2]
+          );
+
+        const low =
+          toFiniteNumber(
+            row?.[3]
+          );
+
+        const close =
+          toFiniteNumber(
+            row?.[4]
+          );
+
+        const volume =
+          toFiniteNumber(
+            row?.[5],
+            0
+          );
+
         return {
           openTime,
 
-          open:
-            toFiniteNumber(
-              row?.[1],
-              NaN
-            ),
+          open,
 
-          high:
-            toFiniteNumber(
-              row?.[2],
-              NaN
-            ),
+          high,
 
-          low:
-            toFiniteNumber(
-              row?.[3],
-              NaN
-            ),
+          low,
 
-          close:
-            toFiniteNumber(
-              row?.[4],
-              NaN
-            ),
+          close,
 
-          volume:
-            toFiniteNumber(
-              row?.[5],
-              0
-            ),
+          volume,
 
           closeTime,
 
@@ -671,7 +883,19 @@ function normalizeSpotKlines(
 // GET MEXC FUTURES KLINES
 // ============================================================
 //
-// THIS IS THE PRIMARY FUNCTION USED BY CRT SERVICE.
+// PRIMARY FUNCTION USED BY CRT SERVICE.
+//
+// IMPORTANT:
+//
+// The Futures API uses:
+//
+//     start
+//     end
+//
+// timestamps in SECONDS.
+//
+// We request enough history to cover the desired number of
+// candles plus one extra candle.
 //
 // ============================================================
 
@@ -688,7 +912,9 @@ export async function getFuturesKlines(
     Math.min(
       Math.max(
         1,
-        Number(limit) || 100
+        Number(
+          limit
+        ) || 100
       ),
       1000
     );
@@ -698,66 +924,183 @@ export async function getFuturesKlines(
       timeframe
     ].futures;
 
+  const intervalMs =
+    INTERVALS[
+      timeframe
+    ].ms;
+
+  const intervalSeconds =
+    Math.floor(
+      intervalMs /
+        1000
+    );
+
+  // ----------------------------------------------------------
+  // Current UNIX time in seconds.
+  // ----------------------------------------------------------
+
+  const nowMs =
+    Date.now();
+
+  const nowSeconds =
+    Math.floor(
+      nowMs /
+        1000
+    );
+
+  // ----------------------------------------------------------
+  // Request extra history.
+  //
+  // Extra candles protect the engine from missing the
+  // previous confirmed fractal at the edge of the dataset.
+  // ----------------------------------------------------------
+
+  const requestedSeconds =
+    (
+      safeLimit +
+      10
+    ) *
+    intervalSeconds;
+
+  const startSeconds =
+    Math.max(
+      0,
+      nowSeconds -
+        requestedSeconds
+    );
+
+  const endSeconds =
+    nowSeconds;
+
+  // ----------------------------------------------------------
+  // Build MEXC Futures request.
+  // ----------------------------------------------------------
+
   const params =
     new URLSearchParams({
       interval,
-    });
 
-  // ----------------------------------------------------------
-  // MEXC Futures contract kline endpoint.
-  // ----------------------------------------------------------
+      start:
+        String(
+          startSeconds
+        ),
+
+      end:
+        String(
+          endSeconds
+        ),
+    });
 
   const url =
     `${FUTURES_BASE_URL}` +
     `/api/v1/contract/kline/` +
-    `${encodeURIComponent(symbol)}` +
+    `${encodeURIComponent(
+      symbol
+    )}` +
     `?${params.toString()}`;
 
-  const data =
+  // ----------------------------------------------------------
+  // Request.
+  // ----------------------------------------------------------
+
+  const response =
     await requestJson(
       url
     );
 
+  // ----------------------------------------------------------
+  // Validate MEXC envelope.
+  //
+  // Official success response:
+  //
+  // success: true
+  // code: 0
+  // data: {...}
+  //
+  // ----------------------------------------------------------
+
+  const success =
+    response?.success ===
+    true;
+
+  const code =
+    Number(
+      response?.code
+    );
+
   if (
-    !data?.success ||
-    !data?.data
+    !success ||
+    (
+      Number.isFinite(
+        code
+      ) &&
+      code !== 0
+    )
   ) {
     throw new Error(
-      `Unexpected MEXC Futures kline response ` +
-      `for ${symbol} ${timeframe}`
+      `MEXC Futures kline API error ` +
+      `for ${symbol} ${timeframe}: ` +
+      `${JSON.stringify(
+        response
+      )}`
     );
   }
 
+  // ----------------------------------------------------------
+  // Validate the actual candle data.
+  // ----------------------------------------------------------
+
+  const data =
+    response?.data;
+
+  if (
+    !data ||
+    typeof data !==
+      'object'
+  ) {
+    throw new Error(
+      `Unexpected MEXC Futures kline response ` +
+      `for ${symbol} ${timeframe}: missing data object`
+    );
+  }
+
+  // ----------------------------------------------------------
+  // Normalize.
+  // ----------------------------------------------------------
+
   const candles =
     normalizeFuturesKlines(
-      data.data,
+      data,
       timeframe
     );
 
+  if (
+    !candles.length
+  ) {
+    return [];
+  }
+
   // ----------------------------------------------------------
-  // MEXC normally returns the latest candles.
-  //
-  // Keep the requested number after normalization.
+  // Return the requested number of latest candles.
   // ----------------------------------------------------------
 
-  return candles
-    .slice(
-      -safeLimit
-    );
+  return candles.slice(
+    -safeLimit
+  );
 }
 
 // ============================================================
 // GET NORMALIZED KLINES
 // ============================================================
 //
-// CRT SERVICE calls:
+// CRT SERVICE:
 //
-//   getKlines({
-//      market: 'futures',
-//      symbol,
-//      timeframe,
-//      limit
-//   })
+// getKlines({
+//   market: 'futures',
+//   symbol,
+//   timeframe,
+//   limit
+// })
 //
 // ============================================================
 
@@ -768,10 +1111,7 @@ export async function getKlines({
   limit = 100,
 }) {
   // ----------------------------------------------------------
-  // HARD LOCK
-  //
-  // CRT system is MEXC FUTURES ONLY.
-  //
+  // HARD FUTURES-ONLY LOCK.
   // ----------------------------------------------------------
 
   if (
@@ -781,6 +1121,14 @@ export async function getKlines({
     throw new Error(
       `PDYN CRT only supports MEXC Futures. ` +
       `Received market: ${market}`
+    );
+  }
+
+  if (
+    !symbol
+  ) {
+    throw new Error(
+      'MEXC Futures symbol is required'
     );
   }
 
@@ -813,7 +1161,9 @@ export async function getSpotKlines(
     Math.min(
       Math.max(
         1,
-        Number(limit) || 100
+        Number(
+          limit
+        ) || 100
       ),
       1000
     );
@@ -821,10 +1171,12 @@ export async function getSpotKlines(
   const params =
     new URLSearchParams({
       symbol,
+
       interval:
         INTERVALS[
           timeframe
         ].spot,
+
       limit:
         String(
           safeLimit
@@ -860,10 +1212,12 @@ export async function getSpotKlines(
 }
 
 // ============================================================
-// GET FUTURES CONTRACTS
+// GET MEXC FUTURES CONTRACTS
 // ============================================================
 //
-// Returns MEXC Futures contracts.
+// Endpoint:
+//
+//     /api/v1/contract/detail
 //
 // ============================================================
 
@@ -872,23 +1226,48 @@ export async function getFuturesContracts() {
     `${FUTURES_BASE_URL}` +
     `/api/v1/contract/detail`;
 
-  const data =
+  const response =
     await requestJson(
       url
     );
 
+  const success =
+    response?.success ===
+    true;
+
+  const code =
+    Number(
+      response?.code
+    );
+
   if (
-    !data?.success ||
-    !Array.isArray(
-      data?.data
+    !success ||
+    (
+      Number.isFinite(
+        code
+      ) &&
+      code !== 0
     )
   ) {
     throw new Error(
-      'Unexpected MEXC Futures contract response'
+      `MEXC Futures contract API error: ` +
+      `${JSON.stringify(
+        response
+      )}`
     );
   }
 
-  return data.data
+  if (
+    !Array.isArray(
+      response?.data
+    )
+  ) {
+    throw new Error(
+      'Unexpected MEXC Futures contract response: data is not an array'
+    );
+  }
+
+  return response.data
     .filter(
       (
         contract
@@ -909,6 +1288,12 @@ export async function getFuturesContracts() {
         quoteCoin:
           contract.quoteCoin,
 
+        settleCoin:
+          contract.settleCoin,
+
+        state:
+          contract.state,
+
         apiAllowed:
           contract.apiAllowed,
       })
@@ -920,12 +1305,14 @@ export async function getFuturesContracts() {
 // ============================================================
 //
 // Futures:
-//   MEXC_FUTURES_SYMBOLS
+//
+//     MEXC_FUTURES_SYMBOLS
 //
 // Spot:
-//   MEXC_SPOT_SYMBOLS
 //
-// CRT SERVICE uses FUTURES only.
+//     MEXC_SPOT_SYMBOLS
+//
+// CRT uses Futures only.
 //
 // ============================================================
 
@@ -940,7 +1327,7 @@ export function getConfiguredSymbols(
 
   return String(
     process.env[key] ||
-    ''
+      ''
   )
     .split(',')
     .map(
@@ -955,12 +1342,7 @@ export function getConfiguredSymbols(
 }
 
 // ============================================================
-// TIMEFRAME HELPERS
-// ============================================================
-//
-// These functions allow crtService.js to use the exact
-// MEXC-normalized candle boundaries.
-//
+// GET TIMEFRAME MILLISECONDS
 // ============================================================
 
 export function getTimeframeMilliseconds(
@@ -979,7 +1361,7 @@ export function getTimeframeMilliseconds(
 // GET CANDLE OPEN TIME
 // ============================================================
 //
-// Returns the exact normalized MEXC candle open time.
+// Returns the normalized MEXC candle OPEN timestamp.
 //
 // No timezone conversion.
 //
@@ -1032,8 +1414,6 @@ export function getCandleOpenTime(
 //
 // 00:00:00 -> next 00:00:00
 //
-// The boundary is based on MEXC candle timestamps.
-//
 // ============================================================
 
 export function getCandleCloseBoundary(
@@ -1066,11 +1446,9 @@ export function getCandleCloseBoundary(
 // GET CANDLE CLOSE TIME
 // ============================================================
 //
-// Stored candle closeTime:
+// Stored closeTime:
 //
-//   boundary - 1ms
-//
-// This is useful for display.
+//     boundary - 1ms
 //
 // ============================================================
 
@@ -1093,7 +1471,8 @@ export function getCandleCloseTime(
   }
 
   return (
-    boundary - 1
+    boundary -
+    1
   );
 }
 
@@ -1101,7 +1480,7 @@ export function getCandleCloseTime(
 // IS MEXC CANDLE CLOSED
 // ============================================================
 //
-// This is the authoritative closed-candle check.
+// Authoritative closed-candle check.
 //
 // ============================================================
 
@@ -1134,13 +1513,7 @@ export function isMexcCandleClosed(
 // GET NEXT MEXC CANDLE BOUNDARY
 // ============================================================
 //
-// Used by scheduling logic.
-//
-// IMPORTANT:
-//
-// This does NOT calculate Manila candle boundaries.
-//
-// It uses the actual MEXC candle open timestamp.
+// This uses the provided MEXC candle OPEN timestamp.
 //
 // ============================================================
 
@@ -1148,33 +1521,21 @@ export function getNextCandleBoundary(
   timestamp,
   timeframe
 ) {
-  const boundary =
-    getCandleCloseBoundary(
-      timestamp,
-      timeframe
-    );
-
-  if (
-    !Number.isFinite(
-      boundary
-    )
-  ) {
-    return NaN;
-  }
-
-  return boundary;
+  return getCandleCloseBoundary(
+    timestamp,
+    timeframe
+  );
 }
 
 // ============================================================
-// GET CURRENT MEXC CANDLE OPEN
+// GET CURRENT CANDLE OPEN
 // ============================================================
 //
-// This helper is based on UNIX epoch boundaries.
+// This helper is useful when scheduling.
 //
-// It is NOT based on Asia/Manila.
+// It uses UNIX epoch boundaries.
 //
-// For crypto Futures, the exchange candle boundaries are
-// represented by the exchange timestamp itself.
+// No Manila offset is applied.
 //
 // ============================================================
 
@@ -1192,7 +1553,9 @@ export function getCurrentCandleOpen(
     );
 
   const timestamp =
-    Number(now);
+    Number(
+      now
+    );
 
   if (
     !Number.isFinite(
@@ -1205,14 +1568,14 @@ export function getCurrentCandleOpen(
   return (
     Math.floor(
       timestamp /
-      intervalMs
+        intervalMs
     ) *
     intervalMs
   );
 }
 
 // ============================================================
-// GET CURRENT MEXC CANDLE BOUNDARY
+// GET CURRENT CANDLE BOUNDARY
 // ============================================================
 
 export function getCurrentCandleBoundary(
@@ -1242,11 +1605,55 @@ export function getCurrentCandleBoundary(
 }
 
 // ============================================================
-// GET TIMEFRAME INFORMATION
+// GET NEXT CURRENT MEXC BOUNDARY
 // ============================================================
 //
-// Useful for diagnostics.
+// This returns the next boundary after `now`.
 //
+// Useful for scheduling:
+//
+//     15m
+//     1h
+//     4h
+//     1d
+//
+// ============================================================
+
+export function getNextCurrentCandleBoundary(
+  timeframe,
+  now = Date.now()
+) {
+  const currentBoundary =
+    getCurrentCandleBoundary(
+      timeframe,
+      now
+    );
+
+  if (
+    !Number.isFinite(
+      currentBoundary
+    )
+  ) {
+    return NaN;
+  }
+
+  if (
+    Number(now) <
+    currentBoundary
+  ) {
+    return currentBoundary;
+  }
+
+  return (
+    currentBoundary +
+    getTimeframeMilliseconds(
+      timeframe
+    )
+  );
+}
+
+// ============================================================
+// GET TIMEFRAME INFORMATION
 // ============================================================
 
 export function getTimeframeInfo(
@@ -1267,8 +1674,15 @@ export function getTimeframeInfo(
     futuresInterval:
       config.futures,
 
+    spotInterval:
+      config.spot,
+
     intervalMs:
       config.ms,
+
+    intervalSeconds:
+      config.ms /
+      1000,
 
     intervalMinutes:
       config.ms /
@@ -1277,14 +1691,54 @@ export function getTimeframeInfo(
 }
 
 // ============================================================
+// GET MEXC FUTURES BASE URL
+//
+// Diagnostic helper.
+//
+// ============================================================
+
+export function getFuturesBaseUrl() {
+  return FUTURES_BASE_URL;
+}
+
+// ============================================================
+// SERVICE STARTUP DIAGNOSTICS
+// ============================================================
+
+console.log(
+  `[MEXC] Futures API: ${FUTURES_BASE_URL}`
+);
+
+console.log(
+  `[MEXC] Futures market data: ENABLED`
+);
+
+console.log(
+  `[MEXC] Spot market data: COMPATIBILITY ONLY`
+);
+
+console.log(
+  `[MEXC] Timeframes: ${SUPPORTED_TIMEFRAMES.join(
+    ', '
+  )}`
+);
+
+// ============================================================
 // EXPORTS
 // ============================================================
 
 export {
   INTERVALS,
+
   SUPPORTED_TIMEFRAMES,
+
   normalizeFuturesKlines,
+
   normalizeSpotKlines,
+
   isCandleClosed,
+
   getCandleBoundary,
+
+  normalizeTimestamp,
 };
