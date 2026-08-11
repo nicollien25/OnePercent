@@ -192,25 +192,6 @@ export default {
         `errors ${reactionRolePanelSummary.errors}`
       );
 
-
-      // ========================================================
-      // LEVEL ROLES
-      // ========================================================
-
-      const levelRoleSummary =
-        await reconcileLevelRoles(
-          client
-        );
-
-      startupLog(
-        `Level role sync: ` +
-        `scanned ${levelRoleSummary.scannedGuilds} guilds, ` +
-        `pruned ${levelRoleSummary.prunedRewardEntries} stale rewards, ` +
-        `re-awarded ${levelRoleSummary.rolesReAwarded} roles, ` +
-        `errors ${levelRoleSummary.errors}`
-      );
-
-
       // ========================================================
       // STARTUP COMPLETE
       // ========================================================
