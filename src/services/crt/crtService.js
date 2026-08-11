@@ -13,7 +13,7 @@ import {
 import { isNewSignal } from './signalManager.js';
 
 // ============================================================
-// PDYN CRT SERVICE
+// OnePercent CRT SERVICE
 // ============================================================
 //
 // PRIMARY PURPOSE:
@@ -753,7 +753,7 @@ function createSignalEmbed(
     // ========================================================
 
     .setDescription(
-      '**PDYN CRT CONFIRMATION**'
+      '**OnePercent CRT CONFIRMATION**'
     )
 
     // ========================================================
