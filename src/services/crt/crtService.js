@@ -26,7 +26,6 @@ import { isNewSignal } from './signalManager.js';
 //
 //   • Market Structure
 //   • STD Deviation
-//   • Fractal Price
 //   • Liquidity Sweep
 //   • RSI
 //
@@ -39,7 +38,6 @@ import { isNewSignal } from './signalManager.js';
 //   • CRT confirmation
 //   • Market structure
 //   • STD deviation
-//   • fractal price
 //   • liquidity sweep
 //   • RSI
 //
@@ -196,53 +194,6 @@ function timeframeLabel(
       '1d': 'DAILY',
     }[timeframe] ||
     String(timeframe)
-  );
-}
-
-// ============================================================
-// PRICE FORMATTER
-// ============================================================
-
-function fmtPrice(
-  value
-) {
-  const number =
-    Number(value);
-
-  if (
-    !Number.isFinite(number)
-  ) {
-    return 'N/A';
-  }
-
-  if (
-    Math.abs(number) >= 1000
-  ) {
-    return number.toLocaleString(
-      'en-US',
-      {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2,
-      }
-    );
-  }
-
-  if (
-    Math.abs(number) >= 1
-  ) {
-    return number.toLocaleString(
-      'en-US',
-      {
-        maximumFractionDigits: 5,
-      }
-    );
-  }
-
-  return number.toLocaleString(
-    'en-US',
-    {
-      maximumSignificantDigits: 7,
-    }
   );
 }
 
@@ -424,39 +375,6 @@ function getFractalType(
 }
 
 // ============================================================
-// FRACTAL PRICE
-//
-// Rachel T fractal price is the price of the confirmed
-// fractal itself.
-//
-// Priority:
-//
-//   fractalPrice
-//   fractal.price
-//
-// parentHigh / parentLow are only fallback values.
-// ============================================================
-
-function getFractalPrice(
-  signal
-) {
-  const value =
-    signal?.fractalPrice ??
-    signal?.fractal?.price ??
-    (
-      getFractalType(
-        signal
-      ) === 'TOP'
-        ? signal?.parentHigh
-        : signal?.parentLow
-    );
-
-  return fmtPrice(
-    value
-  );
-}
-
-// ============================================================
 // LIQUIDITY SWEEP
 //
 // IMPORTANT:
@@ -485,7 +403,7 @@ function getLiquiditySweep(
 
   if (
     typeof sweep.label ===
-    'string' &&
+      'string' &&
     sweep.label.trim()
   ) {
     return sweep.label;
@@ -685,9 +603,11 @@ function formatCoin(
 //
 //   Market Structure
 //   STD Deviation
-//   Fractal Price
+//   Fractal
 //   Liquidity
 //   RSI
+//
+// NO FRACTAL PRICE
 // ============================================================
 
 function createSignalEmbed(
@@ -715,11 +635,6 @@ function createSignalEmbed(
 
   const stdDeviation =
     getStdDeviation(
-      signal
-    );
-
-  const fractalPrice =
-    getFractalPrice(
       signal
     );
 
@@ -765,8 +680,10 @@ function createSignalEmbed(
       {
         name:
           'Source',
+
         value:
           '**MEXC Exchange**',
+
         inline:
           false,
       },
@@ -774,10 +691,12 @@ function createSignalEmbed(
       {
         name:
           'Timeframe',
+
         value:
           timeframeLabel(
             signal.timeframe
           ),
+
         inline:
           true,
       },
@@ -785,8 +704,10 @@ function createSignalEmbed(
       {
         name:
           'Market Structure',
+
         value:
           structure,
+
         inline:
           true,
       },
@@ -794,8 +715,10 @@ function createSignalEmbed(
       {
         name:
           'STD Deviation',
+
         value:
           stdDeviation,
+
         inline:
           true,
       },
@@ -803,17 +726,10 @@ function createSignalEmbed(
       {
         name:
           'Fractal',
+
         value:
           fractalType,
-        inline:
-          true,
-      },
 
-      {
-        name:
-          'Fractal Price',
-        value:
-          fractalPrice,
         inline:
           true,
       },
@@ -821,8 +737,10 @@ function createSignalEmbed(
       {
         name:
           'Liquidity',
+
         value:
           liquidity,
+
         inline:
           true,
       },
@@ -830,8 +748,10 @@ function createSignalEmbed(
       {
         name:
           'CONFIRM CRT Candle',
+
         value:
           confirmation,
+
         inline:
           true,
       },
@@ -839,8 +759,10 @@ function createSignalEmbed(
       {
         name:
           'RSI',
+
         value:
           rsi,
+
         inline:
           true,
       }
@@ -1322,7 +1244,6 @@ async function scanSymbol(
       `[CRT] RACHEL T CONFIRMED ${market}:${symbol}:${timeframe}` +
       ` | Structure=${getMarketStructure(signal)}` +
       ` | Fractal=${getFractalType(signal)}` +
-      ` | FractalPrice=${getFractalPrice(signal)}` +
       ` | STD=${getStdDeviation(signal)}` +
       ` | Liquidity=${getLiquiditySweep(signal)}` +
       ` | RSI=${signal.rsiState || 'Neutral'}`
@@ -1561,7 +1482,6 @@ export function getCRTConfig() {
     supportingData: [
       'MARKET_STRUCTURE',
       'STD_DEVIATION',
-      'FRACTAL_PRICE',
       'LIQUIDITY_SWEEP',
       'RSI',
     ],
@@ -1577,4 +1497,3 @@ console.log(
     TIMEFRAMES
   ).join(', ')}`
 );
-
