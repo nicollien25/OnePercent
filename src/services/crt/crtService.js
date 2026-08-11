@@ -5,7 +5,6 @@ import { buildSignal } from './crtEngine.js';
 
 import {
   getKlines,
-  getSpotSymbols,
   getFuturesContracts,
   getConfiguredSymbols,
 } from './mexcService.js';
@@ -20,12 +19,17 @@ import { isNewSignal } from './signalManager.js';
 //
 //   Rachel T Fractal / CRT Confirmation
 //
+// MARKET:
+//
+//   MEXC FUTURES ONLY
+//
 // The Rachel T Fractal confirmation is the PRIMARY signal.
 //
 // Supporting information:
 //
 //   • Market Structure
 //   • STD Deviation
+//   • Fractal
 //   • Liquidity Sweep
 //   • RSI
 //
@@ -43,11 +47,18 @@ import { isNewSignal } from './signalManager.js';
 //
 // crtService.js only:
 //
-//   1. Gets MEXC candles
+//   1. Gets MEXC Futures candles
 //   2. Removes the still-forming candle
 //   3. Sends candles to crtEngine.js
 //   4. Receives the confirmed signal
 //   5. Displays the signal in Discord
+//
+// IMPORTANT:
+//
+//   SPOT IS COMPLETELY DISABLED.
+//
+//   This service will ONLY scan:
+//      MEXC FUTURES
 //
 // ============================================================
 
@@ -73,27 +84,23 @@ const CHANNELS =
   CRT_CONFIG.channels || {};
 
 // ============================================================
-// MARKETS
+// MARKET TYPE
 //
-// Default remains spot,futures so the existing configuration
-// continues to work.
+// HARD LOCK:
 //
-// If bot.js contains:
-// markets: 'futures'
+//   MEXC FUTURES ONLY
 //
-// then only MEXC Futures will be scanned.
+// Even if bot.js contains:
+//
+//   markets: 'spot,futures'
+//
+// this service will still use FUTURES ONLY.
+//
 // ============================================================
 
-const MARKET_TYPES =
-  String(
-    CRT_CONFIG.markets ||
-      'spot,futures'
-  )
-    .split(',')
-    .map((value) =>
-      value.trim().toLowerCase()
-    )
-    .filter(Boolean);
+const MARKET_TYPES = [
+  'futures',
+];
 
 // ============================================================
 // SCAN INTERVAL
@@ -188,7 +195,9 @@ function timeframeLabel(
 ) {
   return (
     {
+      '5m': '5 MINUTES',
       '15m': '15 MINUTES',
+      '30m': '30 MINUTES',
       '1h': '1 HOUR',
       '4h': '4 HOURS',
       '1d': 'DAILY',
@@ -558,9 +567,10 @@ function signalColor(
 // BTC_USD  -> BTC
 // BTCUSD   -> BTC
 //
-// Also handles MEXC futures symbols such as:
+// Also handles MEXC Futures symbols such as:
 //
 // BTC_USDT
+//
 // ============================================================
 
 function formatCoin(
@@ -668,7 +678,7 @@ function createSignalEmbed(
     // ========================================================
 
     .setDescription(
-      '**OnePercent CRT CONFIRMATION**'
+      '**OnePERCENT CRT SIGNAL**'
     )
 
     // ========================================================
@@ -682,7 +692,7 @@ function createSignalEmbed(
           'Source',
 
         value:
-          '**MEXC Exchange**',
+          '**MEXC Futures**',
 
         inline:
           false,
@@ -785,7 +795,7 @@ function createSignalEmbed(
 
     .setFooter({
       text:
-        'PDYN • Rachel T CRT • MEXC Exchange',
+        'PDYN • Rachel T CRT • MEXC Futures',
     })
 
     // ========================================================
@@ -860,13 +870,30 @@ async function sendSignal(
 }
 
 // ============================================================
-// FILTER SYMBOLS
+// FILTER FUTURES SYMBOLS
+//
+// MEXC FUTURES ONLY
+//
+// No Spot symbols are accepted here.
 // ============================================================
 
 function filterSymbols(
   symbols,
   market
 ) {
+  // ----------------------------------------------------------
+  // HARD SAFETY CHECK
+  //
+  // This function must NEVER process Spot.
+  // ----------------------------------------------------------
+
+  if (
+    market !==
+    'futures'
+  ) {
+    return [];
+  }
+
   const configured =
     getConfiguredSymbols(
       market
@@ -878,10 +905,11 @@ function filterSymbols(
     ) &&
     configured.length
   ) {
-    return configured.slice(
-      0,
-      MAX_SYMBOLS
-    );
+    return configured
+      .slice(
+        0,
+        MAX_SYMBOLS
+      );
   }
 
   if (
@@ -915,41 +943,23 @@ function filterSymbols(
           ).toUpperCase();
 
         // ----------------------------------------------------
-        // MEXC FUTURES
+        // MEXC FUTURES ONLY
         // ----------------------------------------------------
 
-        if (
-          market ===
-          'futures'
-        ) {
-          const quoteCoin =
-            String(
-              item?.quoteCoin ||
-                ''
-            ).toUpperCase();
-
-          return (
-            quoteCoin ===
-              quote ||
-            normalized.endsWith(
-              `_${quote}`
-            ) ||
-            normalized.endsWith(
-              `${quote}`
-            )
-          );
-        }
-
-        // ----------------------------------------------------
-        // MEXC SPOT
-        // ----------------------------------------------------
+        const quoteCoin =
+          String(
+            item?.quoteCoin ||
+              ''
+          ).toUpperCase();
 
         return (
-          normalized.endsWith(
-            quote
-          ) ||
+          quoteCoin ===
+            quote ||
           normalized.endsWith(
             `_${quote}`
+          ) ||
+          normalized.endsWith(
+            `${quote}`
           )
         );
       }
@@ -971,7 +981,12 @@ function filterSymbols(
 }
 
 // ============================================================
-// REFRESH SYMBOLS
+// REFRESH FUTURES SYMBOLS
+//
+// ONLY MEXC FUTURES CONTRACTS ARE LOADED.
+//
+// There is intentionally NO getSpotSymbols() call.
+//
 // ============================================================
 
 async function refreshSymbols(
@@ -993,49 +1008,43 @@ async function refreshSymbols(
     return;
   }
 
-  for (
-    const market of
-    MARKET_TYPES
-  ) {
-    try {
-      if (
-        market ===
+  // ==========================================================
+  // MEXC FUTURES ONLY
+  // ==========================================================
+
+  try {
+    const contracts =
+      await getFuturesContracts();
+
+    cachedSymbols.set(
+      'futures',
+      filterSymbols(
+        contracts,
         'futures'
-      ) {
-        const contracts =
-          await getFuturesContracts();
+      )
+    );
 
-        cachedSymbols.set(
-          market,
-          filterSymbols(
-            contracts,
-            market
-          )
-        );
-      } else if (
-        market ===
-        'spot'
-      ) {
-        const symbols =
-          await getSpotSymbols();
+    console.log(
+      `[CRT] MEXC Futures symbols loaded: ${
+        cachedSymbols.get(
+          'futures'
+        )?.length || 0
+      }`
+    );
 
-        cachedSymbols.set(
-          market,
-          filterSymbols(
-            symbols,
-            market
-          )
-        );
-      }
-    } catch (
-      error
-    ) {
-      console.error(
-        `[CRT] Failed to refresh ${market} symbols:`,
-        error?.message ||
-          error
-      );
-    }
+  } catch (
+    error
+  ) {
+    console.error(
+      '[CRT] Failed to refresh MEXC Futures symbols:',
+      error?.message ||
+        error
+    );
+
+    cachedSymbols.set(
+      'futures',
+      []
+    );
   }
 
   lastSymbolRefresh =
@@ -1059,6 +1068,10 @@ async function refreshSymbols(
 //
 // Therefore nothing is sent to Discord.
 //
+// MARKET:
+//
+//   MEXC FUTURES ONLY
+//
 // ============================================================
 
 async function scanSymbol(
@@ -1068,11 +1081,27 @@ async function scanSymbol(
   timeframe
 ) {
   try {
+
+    // ========================================================
+    // HARD FUTURES-ONLY SAFETY
+    // ========================================================
+
+    if (
+      market !==
+      'futures'
+    ) {
+      return;
+    }
+
     const candles =
       await getKlines({
-        market,
+        market:
+          'futures',
+
         symbol,
+
         timeframe,
+
         limit:
           KLINE_LIMIT,
       });
@@ -1088,8 +1117,8 @@ async function scanSymbol(
     // ========================================================
     // CLOSED CANDLES ONLY
     //
-    // Never allow the currently forming MEXC candle to become
-    // the CRT confirmation candle.
+    // Never allow the currently forming MEXC Futures candle
+    // to become the CRT confirmation candle.
     // ========================================================
 
     const closed =
@@ -1141,8 +1170,12 @@ async function scanSymbol(
     const signal =
       buildSignal({
         symbol,
-        market,
+
+        market:
+          'futures',
+
         timeframe,
+
         candles:
           closed,
 
@@ -1209,7 +1242,7 @@ async function scanSymbol(
       !signal.id
     ) {
       console.warn(
-        `[CRT] Signal rejected because no signal.id was returned: ${market}:${symbol}:${timeframe}`
+        `[CRT] Signal rejected because no signal.id was returned: futures:${symbol}:${timeframe}`
       );
 
       return;
@@ -1241,7 +1274,7 @@ async function scanSymbol(
     // ========================================================
 
     console.log(
-      `[CRT] RACHEL T CONFIRMED ${market}:${symbol}:${timeframe}` +
+      `[CRT] RACHEL T CONFIRMED futures:${symbol}:${timeframe}` +
       ` | Structure=${getMarketStructure(signal)}` +
       ` | Fractal=${getFractalType(signal)}` +
       ` | STD=${getStdDeviation(signal)}` +
@@ -1253,7 +1286,7 @@ async function scanSymbol(
     error
   ) {
     console.error(
-      `[CRT] Scan failed ${market}:${symbol}:${timeframe}:`,
+      `[CRT] Scan failed futures:${symbol}:${timeframe}:`,
       error?.message ||
         error
     );
@@ -1277,9 +1310,9 @@ async function scanSymbol(
 //   4h
 //   1d
 //
-// Within each timeframe:
+// IMPORTANT:
 //
-//   configured markets
+//   ONLY MEXC FUTURES.
 //
 // ============================================================
 
@@ -1296,6 +1329,10 @@ async function scanAll(
     true;
 
   try {
+    // ========================================================
+    // LOAD MEXC FUTURES SYMBOLS
+    // ========================================================
+
     await refreshSymbols();
 
     const timeframes =
@@ -1303,32 +1340,45 @@ async function scanAll(
         TIMEFRAMES
       );
 
+    // ========================================================
+    // TIMEFRAME PRIORITY
+    // ========================================================
+
     for (
       const timeframe of
       timeframes
     ) {
-      for (
-        const market of
-        MARKET_TYPES
-      ) {
-        const symbols =
-          cachedSymbols.get(
-            market
-          ) || [];
 
-        for (
-          const symbol of
-          symbols
-        ) {
-          await scanSymbol(
-            client,
-            market,
-            symbol,
-            timeframe
-          );
-        }
+      // ======================================================
+      // FUTURES ONLY
+      // ======================================================
+
+      const market =
+        'futures';
+
+      const symbols =
+        cachedSymbols.get(
+          'futures'
+        ) || [];
+
+      // ======================================================
+      // SCAN EVERY MEXC FUTURES SYMBOL
+      // ======================================================
+
+      for (
+        const symbol of
+        symbols
+      ) {
+
+        await scanSymbol(
+          client,
+          market,
+          symbol,
+          timeframe
+        );
       }
     }
+
   } catch (
     error
   ) {
@@ -1337,6 +1387,7 @@ async function scanAll(
       error?.message ||
         error
     );
+
   } finally {
     scanRunning =
       false;
@@ -1383,11 +1434,19 @@ export function startCRTMonitor(
   );
 
   console.log(
+    '[CRT] MARKET SOURCE: MEXC FUTURES ONLY'
+  );
+
+  console.log(
+    '[CRT] SPOT MARKET: DISABLED'
+  );
+
+  console.log(
     `[CRT] PRIMARY SIGNAL: Rachel T Fractal + CRT Confirmation`
   );
 
   console.log(
-    `[CRT] Markets: ${MARKET_TYPES.join(', ')}`
+    `[CRT] Markets: MEXC Futures ONLY`
   );
 
   console.log(
@@ -1445,8 +1504,13 @@ export async function scanCRTNow(
 
 export function getCRTConfig() {
   return {
-    markets:
-      MARKET_TYPES,
+    // --------------------------------------------------------
+    // HARD LOCKED TO MEXC FUTURES
+    // --------------------------------------------------------
+
+    markets: [
+      'futures',
+    ],
 
     timeframes:
       Object.keys(
@@ -1482,9 +1546,13 @@ export function getCRTConfig() {
     supportingData: [
       'MARKET_STRUCTURE',
       'STD_DEVIATION',
+      'FRACTAL',
       'LIQUIDITY_SWEEP',
       'RSI',
     ],
+
+    source:
+      'MEXC_FUTURES_ONLY',
   };
 }
 
@@ -1493,7 +1561,8 @@ export function getCRTConfig() {
 // ============================================================
 
 console.log(
-  `[CRT] Service loaded • Rachel T Fractal PRIMARY • ${Object.keys(
+  `[CRT] Service loaded • Rachel T Fractal PRIMARY • MEXC FUTURES ONLY • ${Object.keys(
     TIMEFRAMES
   ).join(', ')}`
 );
+
