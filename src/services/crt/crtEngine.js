@@ -3,69 +3,100 @@
 // ============================================================
 //
 // PRIMARY SIGNAL:
-// Rachel_T Fractal Indicator
 //
-// IMPORTANT:
-// This engine is based ONLY on the Filtered Top / Filtered
-// Bottom Fractal logic supplied by the user.
+//   Rachel T Filtered Top / Bottom Fractal
 //
-// filterBW = false
+// FRACTAL LOGIC:
 //
-// Therefore:
+//   FILTERED TOP:
 //
-// FILTERED TOP:
+//     high[4] < high[2]
+//     high[3] <= high[2]
+//     high[2] >= high[1]
+//     high[2] > high[0]
 //
-// high[4] < high[2]
-// && high[3] <= high[2]
-// && high[2] >= high[1]
-// && high[2] > high[0]
+//   FILTERED BOTTOM:
 //
-// FILTERED BOTTOM:
+//     low[4] > low[2]
+//     low[3] >= low[2]
+//     low[2] <= low[1]
+//     low[2] < low[0]
 //
-// low[4] > low[2]
-// && low[3] >= low[2]
-// && low[2] <= low[1]
-// && low[2] < low[0]
+// FRACTAL CONFIRMATION:
 //
-// The actual fractal price is:
+//   The fractal pivot is [2].
+//   Two candles must close after the pivot.
 //
-// TOP    = high[2]
-// BOTTOM = low[2]
+// LIQUIDITY:
 //
-// The fractal is confirmed two candles AFTER the pivot.
+//   IMPORTANT:
 //
-// Example:
+//   Liquidity is based ONLY on confirmed Rachel T fractals.
 //
-// candles:
-// [0] oldest
-// ...
-// [-5]
-// [-4]
-// [-3]  <- ACTUAL FRACTAL PIVOT
-// [-2]
-// [-1]  <- confirmation candle
+//   It does NOT use:
 //
-// This matches Pine's:
+//     • Current candle wick
+//     • Previous candle wick
+//     • CRT confirmation candle
+//     • Previous candle high/low
 //
-// plotshape(... offset=-2)
+//   It scans ALL confirmed fractals and compares:
+//
+//     Latest TOP
+//       vs
+//     Previous confirmed TOP
+//
+//     Latest BOTTOM
+//       vs
+//     Previous confirmed BOTTOM
+//
+//   TOP:
+//
+//     latest TOP > previous TOP
+//       => PREVIOUS FRACTAL HIGH SWEPT
+//
+//   BOTTOM:
+//
+//     latest BOTTOM < previous BOTTOM
+//       => PREVIOUS FRACTAL LOW SWEPT
+//
+// CRT CONFIRMATION:
+//
+//   CRT confirmation is separate from liquidity.
+//
+//   BUY / BOTTOM:
+//
+//     • confirmation candle sweeps previous candle LOW
+//     • closes back inside previous candle range
+//
+//   SELL / TOP:
+//
+//     • confirmation candle sweeps previous candle HIGH
+//     • closes back inside previous candle range
+//
+//   This CRT candle check does NOT determine the Liquidity field.
 //
 // ============================================================
 
-import { calculateRSI, getRSIState } from './rsi.js';
+import {
+  calculateRSI,
+  getRSIState,
+} from './rsi.js';
 
 // ============================================================
 // CONSTANTS
 // ============================================================
 
 const DEFAULT_RSI_PERIOD = 14;
+
 const DEFAULT_OVERSOLD = 30;
+
 const DEFAULT_OVERBOUGHT = 70;
 
-// Number of historical fractals used for market structure.
 const STRUCTURE_FRACTALS = 3;
 
 // ============================================================
-// NUMBER HELPERS
+// NUMBER HELPER
 // ============================================================
 
 function number(value) {
@@ -95,12 +126,14 @@ function getCandleTime(candle) {
 }
 
 // ============================================================
-// CLOSED CANDLE FILTER
+// CLOSED CANDLES ONLY
 // ============================================================
 //
-// The engine expects the caller to provide MEXC candles.
+// The engine never intentionally uses a candle where:
+//   candle.closed === false
 //
-// We still protect against a still-forming candle here.
+// The service already removes the active candle, but the engine
+// protects itself as well.
 //
 // ============================================================
 
@@ -128,24 +161,13 @@ function getClosedCandles(candles) {
 }
 
 // ============================================================
-// RACHEL_T FILTERED TOP FRACTAL
-// ============================================================
-//
-// EXACT LOGIC FROM PROVIDED PINE:
-//
-// isBWFractal(1) =>
-//
-// high[4] < high[2]
-// high[3] <= high[2]
-// high[2] >= high[1]
-// high[2] > high[0]
-//
-// The pivot is candle index -3 when evaluating the latest
-// closed candle.
-//
+// RACHEL T FILTERED TOP
 // ============================================================
 
-function isFilteredTopAt(candles, index) {
+function isFilteredTopAt(
+  candles,
+  index
+) {
   if (
     !Array.isArray(candles) ||
     index < 4 ||
@@ -154,11 +176,30 @@ function isFilteredTopAt(candles, index) {
     return false;
   }
 
-  const h4 = number(candles[index - 4]?.high);
-  const h3 = number(candles[index - 3]?.high);
-  const h2 = number(candles[index - 2]?.high);
-  const h1 = number(candles[index - 1]?.high);
-  const h0 = number(candles[index]?.high);
+  const h4 =
+    number(
+      candles[index - 4]?.high
+    );
+
+  const h3 =
+    number(
+      candles[index - 3]?.high
+    );
+
+  const h2 =
+    number(
+      candles[index - 2]?.high
+    );
+
+  const h1 =
+    number(
+      candles[index - 1]?.high
+    );
+
+  const h0 =
+    number(
+      candles[index]?.high
+    );
 
   if (
     h4 === null ||
@@ -179,21 +220,13 @@ function isFilteredTopAt(candles, index) {
 }
 
 // ============================================================
-// RACHEL_T FILTERED BOTTOM FRACTAL
-// ============================================================
-//
-// EXACT LOGIC FROM PROVIDED PINE:
-//
-// isBWFractal(-1) =>
-//
-// low[4] > low[2]
-// low[3] >= low[2]
-// low[2] <= low[1]
-// low[2] < low[0]
-//
+// RACHEL T FILTERED BOTTOM
 // ============================================================
 
-function isFilteredBottomAt(candles, index) {
+function isFilteredBottomAt(
+  candles,
+  index
+) {
   if (
     !Array.isArray(candles) ||
     index < 4 ||
@@ -202,11 +235,30 @@ function isFilteredBottomAt(candles, index) {
     return false;
   }
 
-  const l4 = number(candles[index - 4]?.low);
-  const l3 = number(candles[index - 3]?.low);
-  const l2 = number(candles[index - 2]?.low);
-  const l1 = number(candles[index - 1]?.low);
-  const l0 = number(candles[index]?.low);
+  const l4 =
+    number(
+      candles[index - 4]?.low
+    );
+
+  const l3 =
+    number(
+      candles[index - 3]?.low
+    );
+
+  const l2 =
+    number(
+      candles[index - 2]?.low
+    );
+
+  const l1 =
+    number(
+      candles[index - 1]?.low
+    );
+
+  const l0 =
+    number(
+      candles[index]?.low
+    );
 
   if (
     l4 === null ||
@@ -227,22 +279,29 @@ function isFilteredBottomAt(candles, index) {
 }
 
 // ============================================================
-// FIND CONFIRMED FRACTALS
+// FIND ALL CONFIRMED RACHEL T FRACTALS
 // ============================================================
 //
-// Every evaluation candle represents the current Pine bar.
+// Every confirmed fractal is stored.
 //
-// The actual fractal is TWO candles behind.
+// IMPORTANT:
 //
-// This function scans historical closed candles and produces
-// only confirmed Rachel_T filtered fractals.
+// We do NOT only keep the latest fractal.
+//
+// The complete confirmed-fractal history is required for the
+// Liquidity calculation.
 //
 // ============================================================
 
 export function findFractals(candles) {
-  const closed = getClosedCandles(candles);
+  const closed =
+    getClosedCandles(
+      candles
+    );
 
-  if (closed.length < 5) {
+  if (
+    closed.length < 5
+  ) {
     return [];
   }
 
@@ -250,10 +309,12 @@ export function findFractals(candles) {
 
   for (
     let confirmationIndex = 4;
-    confirmationIndex < closed.length;
+    confirmationIndex <
+    closed.length;
     confirmationIndex++
   ) {
-    const pivotIndex = confirmationIndex - 2;
+    const pivotIndex =
+      confirmationIndex - 2;
 
     // ========================================================
     // FILTERED TOP
@@ -265,34 +326,48 @@ export function findFractals(candles) {
         confirmationIndex
       )
     ) {
-      const pivot = closed[pivotIndex];
+      const pivot =
+        closed[pivotIndex];
 
-      const price = number(pivot.high);
+      const price =
+        number(
+          pivot.high
+        );
 
-      if (price !== null) {
+      if (
+        price !== null
+      ) {
         fractals.push({
-          type: 'TOP',
-          fractalType: 'FILTERED TOP',
+          type:
+            'TOP',
+
+          fractalType:
+            'FILTERED TOP',
+
           price,
 
-          // Actual pivot candle.
-          candle: pivot,
+          candle:
+            pivot,
 
-          // Exact pivot index.
           pivotIndex,
 
-          // Candle where the fractal became confirmed.
           confirmationCandle:
-            closed[confirmationIndex],
+            closed[
+              confirmationIndex
+            ],
 
           confirmationIndex,
 
           pivotTime:
-            getCandleTime(pivot),
+            getCandleTime(
+              pivot
+            ),
 
           confirmationTime:
             getCandleTime(
-              closed[confirmationIndex]
+              closed[
+                confirmationIndex
+              ]
             ),
         });
       }
@@ -308,34 +383,48 @@ export function findFractals(candles) {
         confirmationIndex
       )
     ) {
-      const pivot = closed[pivotIndex];
+      const pivot =
+        closed[pivotIndex];
 
-      const price = number(pivot.low);
+      const price =
+        number(
+          pivot.low
+        );
 
-      if (price !== null) {
+      if (
+        price !== null
+      ) {
         fractals.push({
-          type: 'BOTTOM',
-          fractalType: 'FILTERED BOTTOM',
+          type:
+            'BOTTOM',
+
+          fractalType:
+            'FILTERED BOTTOM',
+
           price,
 
-          // Actual pivot candle.
-          candle: pivot,
+          candle:
+            pivot,
 
-          // Exact pivot index.
           pivotIndex,
 
-          // Candle where the fractal became confirmed.
           confirmationCandle:
-            closed[confirmationIndex],
+            closed[
+              confirmationIndex
+            ],
 
           confirmationIndex,
 
           pivotTime:
-            getCandleTime(pivot),
+            getCandleTime(
+              pivot
+            ),
 
           confirmationTime:
             getCandleTime(
-              closed[confirmationIndex]
+              closed[
+                confirmationIndex
+              ]
             ),
         });
       }
@@ -343,13 +432,17 @@ export function findFractals(candles) {
   }
 
   // ==========================================================
-  // SORT CHRONOLOGICALLY
+  // CHRONOLOGICAL ORDER
   // ==========================================================
 
   fractals.sort(
     (a, b) =>
-      Number(a.confirmationIndex) -
-      Number(b.confirmationIndex)
+      Number(
+        a.confirmationIndex
+      ) -
+      Number(
+        b.confirmationIndex
+      )
   );
 
   return fractals;
@@ -359,33 +452,56 @@ export function findFractals(candles) {
 // GET LATEST CONFIRMED FRACTAL
 // ============================================================
 
-export function getLatestFractal(candles) {
-  const fractals = findFractals(candles);
+export function getLatestFractal(
+  candles
+) {
+  const fractals =
+    findFractals(
+      candles
+    );
 
-  if (!fractals.length) {
+  if (
+    !fractals.length
+  ) {
     return null;
   }
 
-  return fractals[fractals.length - 1];
+  return fractals[
+    fractals.length - 1
+  ];
 }
 
 // ============================================================
-// GET PREVIOUS FRACTALS
+// GET PREVIOUS SAME-TYPE FRACTALS
+// ============================================================
+//
+// IMPORTANT:
+//
+// TOP only compares with TOP.
+//
+// BOTTOM only compares with BOTTOM.
+//
 // ============================================================
 
 function getPreviousSameType(
   fractals,
   latest,
-  count = 3
+  count = STRUCTURE_FRACTALS
 ) {
-  if (!latest) {
+  if (
+    !latest ||
+    !Array.isArray(
+      fractals
+    )
+  ) {
     return [];
   }
 
   return fractals
     .filter(
       (fractal) =>
-        fractal.type === latest.type &&
+        fractal.type ===
+          latest.type &&
         fractal.confirmationIndex <
           latest.confirmationIndex
     )
@@ -395,39 +511,6 @@ function getPreviousSameType(
 // ============================================================
 // MARKET STRUCTURE
 // ============================================================
-//
-// This follows the intent of the supplied Rachel_T script:
-//
-// TOPS:
-//
-// Latest TOP > previous TOP
-// => HIGHER HIGH
-//
-// Latest TOP < previous TOP
-// => LOWER HIGH
-//
-// BOTTOMS:
-//
-// Latest BOTTOM > previous BOTTOM
-// => HIGHER LOW
-//
-// Latest BOTTOM < previous BOTTOM
-// => LOWER LOW
-//
-// Primary structure:
-//
-// BULLISH:
-// - Higher Low
-// - Higher High
-//
-// BEARISH:
-// - Lower High
-// - Lower Low
-//
-// If there is insufficient fractal history:
-// NEUTRAL
-//
-// ============================================================
 
 function calculateMarketStructure(
   fractals,
@@ -435,38 +518,65 @@ function calculateMarketStructure(
 ) {
   if (!latest) {
     return {
-      marketStructure: 'NEUTRAL',
-      structureType: 'NONE',
-      structurePrice: null,
+      marketStructure:
+        'NEUTRAL',
+
+      structureType:
+        'NONE',
+
+      structurePrice:
+        null,
     };
   }
 
-  const previous = getPreviousSameType(
-    fractals,
-    latest,
-    STRUCTURE_FRACTALS
-  );
+  const previous =
+    getPreviousSameType(
+      fractals,
+      latest,
+      STRUCTURE_FRACTALS
+    );
 
-  if (!previous.length) {
+  if (
+    !previous.length
+  ) {
     return {
-      marketStructure: 'NEUTRAL',
-      structureType: 'NONE',
-      structurePrice: latest.price,
+      marketStructure:
+        'NEUTRAL',
+
+      structureType:
+        'NONE',
+
+      structurePrice:
+        latest.price,
     };
   }
 
   const previousFractal =
-    previous[previous.length - 1];
+    previous[
+      previous.length - 1
+    ];
 
-  if (latest.type === 'TOP') {
+  // ==========================================================
+  // TOP
+  // ==========================================================
+
+  if (
+    latest.type ===
+    'TOP'
+  ) {
     if (
       latest.price >
       previousFractal.price
     ) {
       return {
-        marketStructure: 'BULLISH',
-        structureType: 'HIGHER HIGH',
-        structurePrice: latest.price,
+        marketStructure:
+          'BULLISH',
+
+        structureType:
+          'HIGHER HIGH',
+
+        structurePrice:
+          latest.price,
       };
     }
 
@@ -475,22 +585,39 @@ function calculateMarketStructure(
       previousFractal.price
     ) {
       return {
-        marketStructure: 'BEARISH',
-        structureType: 'LOWER HIGH',
-        structurePrice: latest.price,
+        marketStructure:
+          'BEARISH',
+
+        structureType:
+          'LOWER HIGH',
+
+        structurePrice:
+          latest.price,
       };
     }
   }
 
-  if (latest.type === 'BOTTOM') {
+  // ==========================================================
+  // BOTTOM
+  // ==========================================================
+
+  if (
+    latest.type ===
+    'BOTTOM'
+  ) {
     if (
       latest.price >
       previousFractal.price
     ) {
       return {
-        marketStructure: 'BULLISH',
-        structureType: 'HIGHER LOW',
-        structurePrice: latest.price,
+        marketStructure:
+          'BULLISH',
+
+        structureType:
+          'HIGHER LOW',
+
+        structurePrice:
+          latest.price,
       };
     }
 
@@ -499,56 +626,79 @@ function calculateMarketStructure(
       previousFractal.price
     ) {
       return {
-        marketStructure: 'BEARISH',
-        structureType: 'LOWER LOW',
-        structurePrice: latest.price,
+        marketStructure:
+          'BEARISH',
+
+        structureType:
+          'LOWER LOW',
+
+        structurePrice:
+          latest.price,
       };
     }
   }
 
   return {
-    marketStructure: 'NEUTRAL',
-    structureType: 'NONE',
-    structurePrice: latest.price,
+    marketStructure:
+      'NEUTRAL',
+
+    structureType:
+      'NONE',
+
+    structurePrice:
+      latest.price,
   };
 }
 
 // ============================================================
-// STRONGER MARKET STRUCTURE
-// ============================================================
-//
-// When enough confirmed fractals exist, use the latest TOP
-// and latest BOTTOM together.
-//
-// This avoids incorrectly calling every TOP bullish or every
-// BOTTOM bearish.
-//
+// COMBINED MARKET STRUCTURE
 // ============================================================
 
 function calculateCombinedStructure(
   fractals
 ) {
-  const tops = fractals.filter(
-    (fractal) =>
-      fractal.type === 'TOP'
-  );
+  const tops =
+    fractals.filter(
+      (fractal) =>
+        fractal.type ===
+        'TOP'
+    );
 
-  const bottoms = fractals.filter(
-    (fractal) =>
-      fractal.type === 'BOTTOM'
-  );
+  const bottoms =
+    fractals.filter(
+      (fractal) =>
+        fractal.type ===
+        'BOTTOM'
+    );
 
-  let higherHigh = false;
-  let lowerHigh = false;
-  let higherLow = false;
-  let lowerLow = false;
+  let higherHigh =
+    false;
 
-  if (tops.length >= 2) {
+  let lowerHigh =
+    false;
+
+  let higherLow =
+    false;
+
+  let lowerLow =
+    false;
+
+  // ==========================================================
+  // TOPS
+  // ==========================================================
+
+  if (
+    tops.length >= 2
+  ) {
     const latestTop =
-      tops[tops.length - 1];
+      tops[
+        tops.length - 1
+      ];
 
     const previousTop =
-      tops[tops.length - 2];
+      tops[
+        tops.length - 2
+      ];
 
     higherHigh =
       latestTop.price >
@@ -559,12 +709,22 @@ function calculateCombinedStructure(
       previousTop.price;
   }
 
-  if (bottoms.length >= 2) {
+  // ==========================================================
+  // BOTTOMS
+  // ==========================================================
+
+  if (
+    bottoms.length >= 2
+  ) {
     const latestBottom =
-      bottoms[bottoms.length - 1];
+      bottoms[
+        bottoms.length - 1
+      ];
 
     const previousBottom =
-      bottoms[bottoms.length - 2];
+      bottoms[
+        bottoms.length - 2
+      ];
 
     higherLow =
       latestBottom.price >
@@ -575,37 +735,52 @@ function calculateCombinedStructure(
       previousBottom.price;
   }
 
+  // ==========================================================
+  // HIGHER HIGH + HIGHER LOW
+  // ==========================================================
+
   if (
     higherHigh &&
     higherLow
   ) {
     return {
-      marketStructure: 'BULLISH',
+      marketStructure:
+        'BULLISH',
+
       structureType:
         'HIGHER HIGH / HIGHER LOW',
     };
   }
+
+  // ==========================================================
+  // LOWER HIGH + LOWER LOW
+  // ==========================================================
 
   if (
     lowerHigh &&
     lowerLow
   ) {
     return {
-      marketStructure: 'BEARISH',
+      marketStructure:
+        'BEARISH',
+
       structureType:
         'LOWER HIGH / LOWER LOW',
     };
   }
 
-  // If only one side confirms a structure,
-  // preserve that directional information.
+  // ==========================================================
+  // SINGLE BULLISH STRUCTURE
+  // ==========================================================
 
   if (
     higherHigh ||
     higherLow
   ) {
     return {
-      marketStructure: 'BULLISH',
+      marketStructure:
+        'BULLISH',
+
       structureType:
         higherHigh
           ? 'HIGHER HIGH'
@@ -613,12 +788,18 @@ function calculateCombinedStructure(
     };
   }
 
+  // ==========================================================
+  // SINGLE BEARISH STRUCTURE
+  // ==========================================================
+
   if (
     lowerHigh ||
     lowerLow
   ) {
     return {
-      marketStructure: 'BEARISH',
+      marketStructure:
+        'BEARISH',
+
       structureType:
         lowerHigh
           ? 'LOWER HIGH'
@@ -627,37 +808,37 @@ function calculateCombinedStructure(
   }
 
   return {
-    marketStructure: 'NEUTRAL',
-    structureType: 'NONE',
+    marketStructure:
+      'NEUTRAL',
+
+    structureType:
+      'NONE',
   };
 }
 
 // ============================================================
 // STANDARD DEVIATION
 // ============================================================
-//
-// Supplementary information only.
-//
-// Calculated from closed candle closing prices.
-//
-// Population standard deviation is used here because the
-// display is describing the current observed candle set.
-//
-// ============================================================
 
 function calculateStdDeviation(
   candles
 ) {
-  const values = candles
-    .map((candle) =>
-      number(candle.close)
-    )
-    .filter(
-      (value) =>
-        value !== null
-    );
+  const values =
+    candles
+      .map(
+        (candle) =>
+          number(
+            candle.close
+          )
+      )
+      .filter(
+        (value) =>
+          value !== null
+      );
 
-  if (!values.length) {
+  if (
+    !values.length
+  ) {
     return null;
   }
 
@@ -666,7 +847,8 @@ function calculateStdDeviation(
       (sum, value) =>
         sum + value,
       0
-    ) / values.length;
+    ) /
+    values.length;
 
   const variance =
     values.reduce(
@@ -677,34 +859,47 @@ function calculateStdDeviation(
           2
         ),
       0
-    ) / values.length;
+    ) /
+    values.length;
 
-  return Math.sqrt(variance);
+  return Math.sqrt(
+    variance
+  );
 }
 
 // ============================================================
-// FRACTAL LIQUIDITY SWEEP
+// LIQUIDITY — CONFIRMED FRACTAL HISTORY ONLY
 // ============================================================
 //
-// IMPORTANT:
+// THIS IS THE IMPORTANT CHANGE.
 //
-// Liquidity is NOT based on simply:
+// We scan ALL confirmed Rachel T fractals.
 //
-// previous candle high
-// previous candle low
+// Then:
 //
-// It is based on PREVIOUS CONFIRMED RACHEL_T FRACTALS.
+//   latest TOP
+//       ↓
+//   previous confirmed TOP
+//       ↓
+//   latest.price > previous.price
+//       ↓
+//   PREVIOUS FRACTAL HIGH SWEPT
 //
-// TOP FRACTAL:
+// OR:
 //
-// Current price sweeps previous TOP fractal price.
+//   latest BOTTOM
+//       ↓
+//   previous confirmed BOTTOM
+//       ↓
+//   latest.price < previous.price
+//       ↓
+//   PREVIOUS FRACTAL LOW SWEPT
 //
-// BOTTOM FRACTAL:
+// There is NO candle wick logic here.
 //
-// Current price sweeps previous BOTTOM fractal price.
+// There is NO CRT candle logic here.
 //
-// This allows the CRT confirmation to reference the actual
-// previous fractal liquidity.
+// There is NO previous-candle logic here.
 //
 // ============================================================
 
@@ -713,131 +908,280 @@ function detectFractalLiquiditySweep(
   fractals,
   latest
 ) {
+  // ==========================================================
+  // SAFETY
+  // ==========================================================
+
   if (
     !latest ||
-    !Array.isArray(fractals)
+    !Array.isArray(
+      fractals
+    ) ||
+    !fractals.length
   ) {
     return {
-      swept: false,
-      type: 'NONE',
-      label: 'None',
-      level: null,
-      fractal: null,
+      swept:
+        false,
+
+      type:
+        'NONE',
+
+      label:
+        'None',
+
+      level:
+        null,
+
+      fractal:
+        null,
+
+      previousFractal:
+        null,
     };
   }
 
-  const previousFractals =
+  // ==========================================================
+  // STEP 1
+  //
+  // ALL CONFIRMED FRACTALS BEFORE THE LATEST FRACTAL
+  // ==========================================================
+
+  const previousConfirmedFractals =
     fractals.filter(
       (fractal) =>
         fractal.confirmationIndex <
         latest.confirmationIndex
     );
 
-  if (!previousFractals.length) {
+  if (
+    !previousConfirmedFractals.length
+  ) {
     return {
-      swept: false,
-      type: 'NONE',
-      label: 'None',
-      level: null,
-      fractal: null,
+      swept:
+        false,
+
+      type:
+        'NONE',
+
+      label:
+        'None',
+
+      level:
+        null,
+
+      fractal:
+        null,
+
+      previousFractal:
+        null,
     };
   }
 
   // ==========================================================
-  // PREVIOUS TOP LIQUIDITY
-  // ==========================================================
-
-  const previousTops =
-    previousFractals.filter(
-      (fractal) =>
-        fractal.type === 'TOP'
-    );
-
-  // ==========================================================
-  // PREVIOUS BOTTOM LIQUIDITY
-  // ==========================================================
-
-  const previousBottoms =
-    previousFractals.filter(
-      (fractal) =>
-        fractal.type === 'BOTTOM'
-    );
-
-  // ==========================================================
-  // CURRENT CONFIRMED FRACTAL IS TOP
+  // STEP 2
   //
-  // Look for previous TOP liquidity.
-  // The latest pivot itself is excluded.
+  // KEEP ONLY THE SAME FRACTAL TYPE
+  //
+  // TOP -> TOP
+  // BOTTOM -> BOTTOM
+  // ==========================================================
+
+  const previousSameType =
+    previousConfirmedFractals.filter(
+      (fractal) =>
+        fractal.type ===
+        latest.type
+    );
+
+  if (
+    !previousSameType.length
+  ) {
+    return {
+      swept:
+        false,
+
+      type:
+        'NONE',
+
+      label:
+        'None',
+
+      level:
+        null,
+
+      fractal:
+        null,
+
+      previousFractal:
+        null,
+    };
+  }
+
+  // ==========================================================
+  // STEP 3
+  //
+  // IMMEDIATELY PREVIOUS CONFIRMED SAME-TYPE FRACTAL
+  // ==========================================================
+
+  const previousFractal =
+    previousSameType[
+      previousSameType.length - 1
+    ];
+
+  if (
+    !previousFractal
+  ) {
+    return {
+      swept:
+        false,
+
+      type:
+        'NONE',
+
+      label:
+        'None',
+
+      level:
+        null,
+
+      fractal:
+        null,
+
+      previousFractal:
+        null,
+    };
+  }
+
+  // ==========================================================
+  // STEP 4
+  //
+  // LATEST TOP VS PREVIOUS TOP
   // ==========================================================
 
   if (
-    latest.type === 'TOP' &&
-    previousTops.length
+    latest.type ===
+    'TOP'
   ) {
-    const previousTop =
-      previousTops[
-        previousTops.length - 1
-      ];
-
     if (
       latest.price >
-      previousTop.price
+      previousFractal.price
     ) {
       return {
-        swept: true,
-        type: 'HIGH',
+        swept:
+          true,
+
+        type:
+          'HIGH',
+
         label:
           '**PREVIOUS FRACTAL HIGH SWEPT**',
+
         level:
-          previousTop.price,
+          previousFractal.price,
+
         fractal:
-          previousTop,
+          latest,
+
+        previousFractal,
       };
     }
+
+    return {
+      swept:
+        false,
+
+      type:
+        'NONE',
+
+      label:
+        'None',
+
+      level:
+        previousFractal.price,
+
+      fractal:
+        latest,
+
+      previousFractal,
+    };
   }
 
   // ==========================================================
-  // CURRENT CONFIRMED FRACTAL IS BOTTOM
+  // STEP 5
   //
-  // Look for previous BOTTOM liquidity.
+  // LATEST BOTTOM VS PREVIOUS BOTTOM
   // ==========================================================
 
   if (
-    latest.type === 'BOTTOM' &&
-    previousBottoms.length
+    latest.type ===
+    'BOTTOM'
   ) {
-    const previousBottom =
-      previousBottoms[
-        previousBottoms.length - 1
-      ];
-
     if (
       latest.price <
-      previousBottom.price
+      previousFractal.price
     ) {
       return {
-        swept: true,
-        type: 'LOW',
+        swept:
+          true,
+
+        type:
+          'LOW',
+
         label:
           '**PREVIOUS FRACTAL LOW SWEPT**',
+
         level:
-          previousBottom.price,
+          previousFractal.price,
+
         fractal:
-          previousBottom,
+          latest,
+
+        previousFractal,
       };
     }
+
+    return {
+      swept:
+        false,
+
+      type:
+        'NONE',
+
+      label:
+        'None',
+
+      level:
+        previousFractal.price,
+
+      fractal:
+        latest,
+
+      previousFractal,
+    };
   }
 
   // ==========================================================
-  // NONE
+  // UNKNOWN TYPE
   // ==========================================================
 
   return {
-    swept: false,
-    type: 'NONE',
-    label: 'None',
-    level: null,
-    fractal: null,
+    swept:
+      false,
+
+    type:
+      'NONE',
+
+    label:
+      'None',
+
+    level:
+      null,
+
+    fractal:
+      null,
+
+    previousFractal:
+      previousFractal,
   };
 }
 
@@ -845,16 +1189,8 @@ function detectFractalLiquiditySweep(
 // CRT DIRECTION
 // ============================================================
 //
-// The Rachel_T fractal is the signal.
-//
-// FILTERED BOTTOM:
-// BUY-side CRT confirmation.
-//
-// FILTERED TOP:
-// SELL-side CRT confirmation.
-//
-// Direction is derived from the fractal type, not from RSI,
-// market structure, or candle color.
+// BOTTOM = BUY
+// TOP    = SELL
 //
 // ============================================================
 
@@ -866,13 +1202,15 @@ function getDirection(
   }
 
   if (
-    fractal.type === 'BOTTOM'
+    fractal.type ===
+    'BOTTOM'
   ) {
     return 'BUY';
   }
 
   if (
-    fractal.type === 'TOP'
+    fractal.type ===
+    'TOP'
   ) {
     return 'SELL';
   }
@@ -883,13 +1221,6 @@ function getDirection(
 // ============================================================
 // FRACTAL CONFIRMATION
 // ============================================================
-//
-// A fractal is confirmed when the two candles to its right
-// have closed.
-//
-// This corresponds directly to the Pine [2] relationship.
-//
-// ============================================================
 
 function isConfirmedFractal(
   fractal,
@@ -897,28 +1228,598 @@ function isConfirmedFractal(
 ) {
   if (
     !fractal ||
-    !Array.isArray(candles)
+    !Array.isArray(
+      candles
+    )
   ) {
     return false;
   }
 
   return (
+    Number.isInteger(
+      fractal.confirmationIndex
+    ) &&
+    fractal.confirmationIndex >= 0 &&
     fractal.confirmationIndex <
-    candles.length
+      candles.length
   );
 }
 
 // ============================================================
-// SIGNAL ID
+// CRT BODY RATIO
+// ============================================================
+
+function getBodyRatio(
+  candle
+) {
+  if (!candle) {
+    return 0;
+  }
+
+  const open =
+    number(
+      candle.open
+    );
+
+  const high =
+    number(
+      candle.high
+    );
+
+  const low =
+    number(
+      candle.low
+    );
+
+  const close =
+    number(
+      candle.close
+    );
+
+  if (
+    open === null ||
+    high === null ||
+    low === null ||
+    close === null
+  ) {
+    return 0;
+  }
+
+  const range =
+    high - low;
+
+  if (
+    range <= 0
+  ) {
+    return 0;
+  }
+
+  const body =
+    Math.abs(
+      close - open
+    );
+
+  return (
+    body / range
+  );
+}
+
+// ============================================================
+// ACTUAL CRT CANDLE CONFIRMATION
 // ============================================================
 //
 // IMPORTANT:
 //
-// Use the CONFIRMATION CANDLE TIME.
+// This is NOT Liquidity.
 //
-// This prevents duplicate alerts for the same confirmed
-// fractal after Railway restart / repeated polling.
+// This is only the CRT confirmation candle.
 //
+// BUY / BOTTOM:
+//
+//   signal LOW < parent LOW
+//   AND
+//   signal CLOSE is inside parent range
+//
+// SELL / TOP:
+//
+//   signal HIGH > parent HIGH
+//   AND
+//   signal CLOSE is inside parent range
+//
+// ============================================================
+
+function confirmCRTCandle(
+  fractal,
+  candles,
+  options = {}
+) {
+  if (
+    !fractal ||
+    !Array.isArray(
+      candles
+    )
+  ) {
+    return {
+      confirmed:
+        false,
+
+      reason:
+        'Missing fractal or candle history.',
+    };
+  }
+
+  const confirmationIndex =
+    Number(
+      fractal.confirmationIndex
+    );
+
+  if (
+    !Number.isInteger(
+      confirmationIndex
+    ) ||
+    confirmationIndex <= 0 ||
+    confirmationIndex >=
+      candles.length
+  ) {
+    return {
+      confirmed:
+        false,
+
+      reason:
+        'Invalid CRT confirmation candle index.',
+    };
+  }
+
+  const signalCandle =
+    candles[
+      confirmationIndex
+    ];
+
+  const parentCandle =
+    candles[
+      confirmationIndex - 1
+    ];
+
+  if (
+    !signalCandle ||
+    !parentCandle
+  ) {
+    return {
+      confirmed:
+        false,
+
+      reason:
+        'Missing CRT confirmation or parent candle.',
+    };
+  }
+
+  const signalOpen =
+    number(
+      signalCandle.open
+    );
+
+  const signalHigh =
+    number(
+      signalCandle.high
+    );
+
+  const signalLow =
+    number(
+      signalCandle.low
+    );
+
+  const signalClose =
+    number(
+      signalCandle.close
+    );
+
+  const parentHigh =
+    number(
+      parentCandle.high
+    );
+
+  const parentLow =
+    number(
+      parentCandle.low
+    );
+
+  if (
+    signalOpen === null ||
+    signalHigh === null ||
+    signalLow === null ||
+    signalClose === null ||
+    parentHigh === null ||
+    parentLow === null
+  ) {
+    return {
+      confirmed:
+        false,
+
+      reason:
+        'Invalid CRT candle OHLC values.',
+    };
+  }
+
+  const direction =
+    getDirection(
+      fractal
+    );
+
+  const bodyRatio =
+    getBodyRatio(
+      signalCandle
+    );
+
+  const requireCloseInside =
+    options.requireCloseInside !==
+    false;
+
+  const useCloseDirection =
+    options.useCloseDirection ===
+    true;
+
+  const minBodyRatio =
+    Math.max(
+      0,
+      Number(
+        options.minBodyRatio ??
+          0
+      )
+    );
+
+  // ==========================================================
+  // BUY CRT
+  // ==========================================================
+
+  if (
+    direction ===
+    'BUY'
+  ) {
+    const sweptLow =
+      signalLow <
+      parentLow;
+
+    const closedInside =
+      signalClose >=
+        parentLow &&
+      signalClose <=
+        parentHigh;
+
+    const bullishClose =
+      signalClose >=
+      signalOpen;
+
+    if (
+      !sweptLow
+    ) {
+      return {
+        confirmed:
+          false,
+
+        reason:
+          'BUY CRT failed: confirmation candle did not sweep previous candle LOW.',
+
+        direction,
+
+        signalCandle,
+
+        parentCandle,
+
+        sweptLow:
+          false,
+
+        sweptHigh:
+          false,
+
+        closedInside,
+
+        bodyRatio,
+      };
+    }
+
+    if (
+      requireCloseInside &&
+      !closedInside
+    ) {
+      return {
+        confirmed:
+          false,
+
+        reason:
+          'BUY CRT failed: confirmation candle did not close back inside previous candle range.',
+
+        direction,
+
+        signalCandle,
+
+        parentCandle,
+
+        sweptLow:
+          true,
+
+        sweptHigh:
+          false,
+
+        closedInside:
+          false,
+
+        bodyRatio,
+      };
+    }
+
+    if (
+      useCloseDirection &&
+      !bullishClose
+    ) {
+      return {
+        confirmed:
+          false,
+
+        reason:
+          'BUY CRT failed: confirmation candle is not bullish.',
+
+        direction,
+
+        signalCandle,
+
+        parentCandle,
+
+        sweptLow:
+          true,
+
+        sweptHigh:
+          false,
+
+        closedInside,
+
+        bodyRatio,
+      };
+    }
+
+    if (
+      bodyRatio <
+      minBodyRatio
+    ) {
+      return {
+        confirmed:
+          false,
+
+        reason:
+          `BUY CRT failed: body ratio ${bodyRatio.toFixed(
+            4
+          )} is below minimum ${minBodyRatio.toFixed(
+            4
+          )}.`,
+
+        direction,
+
+        signalCandle,
+
+        parentCandle,
+
+        sweptLow:
+          true,
+
+        sweptHigh:
+          false,
+
+        closedInside,
+
+        bodyRatio,
+      };
+    }
+
+    return {
+      confirmed:
+        true,
+
+      reason:
+        'BUY CRT confirmed.',
+
+      direction,
+
+      signalCandle,
+
+      parentCandle,
+
+      sweptLow:
+        true,
+
+      sweptHigh:
+        false,
+
+      closedInside,
+
+      bodyRatio,
+
+      parentHigh,
+
+      parentLow,
+    };
+  }
+
+  // ==========================================================
+  // SELL CRT
+  // ==========================================================
+
+  if (
+    direction ===
+    'SELL'
+  ) {
+    const sweptHigh =
+      signalHigh >
+      parentHigh;
+
+    const closedInside =
+      signalClose <=
+        parentHigh &&
+      signalClose >=
+        parentLow;
+
+    const bearishClose =
+      signalClose <=
+      signalOpen;
+
+    if (
+      !sweptHigh
+    ) {
+      return {
+        confirmed:
+          false,
+
+        reason:
+          'SELL CRT failed: confirmation candle did not sweep previous candle HIGH.',
+
+        direction,
+
+        signalCandle,
+
+        parentCandle,
+
+        sweptLow:
+          false,
+
+        sweptHigh:
+          false,
+
+        closedInside,
+
+        bodyRatio,
+      };
+    }
+
+    if (
+      requireCloseInside &&
+      !closedInside
+    ) {
+      return {
+        confirmed:
+          false,
+
+        reason:
+          'SELL CRT failed: confirmation candle did not close back inside previous candle range.',
+
+        direction,
+
+        signalCandle,
+
+        parentCandle,
+
+        sweptLow:
+          false,
+
+        sweptHigh:
+          true,
+
+        closedInside:
+          false,
+
+        bodyRatio,
+      };
+    }
+
+    if (
+      useCloseDirection &&
+      !bearishClose
+    ) {
+      return {
+        confirmed:
+          false,
+
+        reason:
+          'SELL CRT failed: confirmation candle is not bearish.',
+
+        direction,
+
+        signalCandle,
+
+        parentCandle,
+
+        sweptLow:
+          false,
+
+        sweptHigh:
+          true,
+
+        closedInside,
+
+        bodyRatio,
+      };
+    }
+
+    if (
+      bodyRatio <
+      minBodyRatio
+    ) {
+      return {
+        confirmed:
+          false,
+
+        reason:
+          `SELL CRT failed: body ratio ${bodyRatio.toFixed(
+            4
+          )} is below minimum ${minBodyRatio.toFixed(
+            4
+          )}.`,
+
+        direction,
+
+        signalCandle,
+
+        parentCandle,
+
+        sweptLow:
+          false,
+
+        sweptHigh:
+          true,
+
+        closedInside,
+
+        bodyRatio,
+      };
+    }
+
+    return {
+      confirmed:
+        true,
+
+      reason:
+        'SELL CRT confirmed.',
+
+      direction,
+
+      signalCandle,
+
+      parentCandle,
+
+      sweptLow:
+        false,
+
+      sweptHigh:
+        true,
+
+      closedInside,
+
+      bodyRatio,
+
+      parentHigh,
+
+      parentLow,
+    };
+  }
+
+  return {
+    confirmed:
+      false,
+
+    reason:
+      'Unable to determine CRT direction.',
+  };
+}
+
+// ============================================================
+// SIGNAL ID
 // ============================================================
 
 function buildSignalId(
@@ -940,56 +1841,46 @@ function buildSignalId(
 // ============================================================
 // BUILD SIGNAL
 // ============================================================
-//
-// This is the main public engine function.
-//
-// Rachel_T Fractal:
-// PRIMARY
-//
-// RSI:
-// SUPPLEMENTARY
-//
-// STD Deviation:
-// SUPPLEMENTARY
-//
-// Market Structure:
-// SUPPLEMENTARY
-//
-// Liquidity Sweep:
-// SUPPLEMENTARY
-//
-// ============================================================
 
 export function buildSignal({
   symbol,
+
   market,
+
   timeframe,
+
   candles,
+
   rsiPeriod =
     DEFAULT_RSI_PERIOD,
+
   oversold =
     DEFAULT_OVERSOLD,
+
   overbought =
     DEFAULT_OVERBOUGHT,
+
+  crtOptions = {},
 }) {
+  // ==========================================================
+  // CLOSED CANDLES
+  // ==========================================================
+
   const closedCandles =
     getClosedCandles(
       candles
     );
 
   // ==========================================================
-  // Minimum candle requirement
-  //
-  // 5 candles are required for the exact [4]...[0] fractal
-  // calculation.
-  //
-  // RSI requires additional history.
+  // MINIMUM HISTORY
   // ==========================================================
 
   const minimumCandles =
     Math.max(
       5,
-      Number(rsiPeriod) + 2
+      Number(
+        rsiPeriod
+      ) + 2
     );
 
   if (
@@ -1000,7 +1891,7 @@ export function buildSignal({
   }
 
   // ==========================================================
-  // FIND ALL CONFIRMED RACHEL_T FRACTALS
+  // FIND ALL CONFIRMED FRACTALS
   // ==========================================================
 
   const fractals =
@@ -1008,7 +1899,9 @@ export function buildSignal({
       closedCandles
     );
 
-  if (!fractals.length) {
+  if (
+    !fractals.length
+  ) {
     return null;
   }
 
@@ -1020,6 +1913,14 @@ export function buildSignal({
     fractals[
       fractals.length - 1
     ];
+
+  if (!latest) {
+    return null;
+  }
+
+  // ==========================================================
+  // VERIFY FRACTAL CONFIRMATION
+  // ==========================================================
 
   if (
     !isConfirmedFractal(
@@ -1044,30 +1945,57 @@ export function buildSignal({
   }
 
   // ==========================================================
+  // ACTUAL CRT CANDLE CONFIRMATION
+  // ==========================================================
+  //
+  // Liquidity is NOT used here.
+  //
+  // CRT confirmation is independent.
+  //
+  // ==========================================================
+
+  const crtConfirmation =
+    confirmCRTCandle(
+      latest,
+      closedCandles,
+      crtOptions
+    );
+
+  if (
+    !crtConfirmation.confirmed
+  ) {
+    return null;
+  }
+
+  // ==========================================================
   // RSI
-  //
-  // SUPPLEMENTARY ONLY.
-  //
-  // RSI DOES NOT CREATE THE SIGNAL.
   // ==========================================================
 
   const closes =
     closedCandles.map(
       (candle) =>
-        Number(candle.close)
+        Number(
+          candle.close
+        )
     );
 
   const rsi =
     calculateRSI(
       closes,
-      Number(rsiPeriod)
+      Number(
+        rsiPeriod
+      )
     );
 
   const rsiState =
     getRSIState(
       rsi,
-      Number(oversold),
-      Number(overbought)
+      Number(
+        oversold
+      ),
+      Number(
+        overbought
+      )
     );
 
   // ==========================================================
@@ -1080,7 +2008,7 @@ export function buildSignal({
     );
 
   // ==========================================================
-  // MARKET STRUCTURE
+  // INDIVIDUAL MARKET STRUCTURE
   // ==========================================================
 
   const individualStructure =
@@ -1088,6 +2016,10 @@ export function buildSignal({
       fractals,
       latest
     );
+
+  // ==========================================================
+  // COMBINED MARKET STRUCTURE
+  // ==========================================================
 
   const combinedStructure =
     calculateCombinedStructure(
@@ -1107,7 +2039,15 @@ export function buildSignal({
       : individualStructure.structureType;
 
   // ==========================================================
-  // FRACTAL LIQUIDITY
+  // LIQUIDITY
+  // ==========================================================
+  //
+  // THIS IS NOW EXCLUSIVELY:
+  //
+  //   latest confirmed fractal
+  //            vs
+  //   previous confirmed same-type fractal
+  //
   // ==========================================================
 
   const liquiditySweep =
@@ -1119,20 +2059,20 @@ export function buildSignal({
 
   // ==========================================================
   // STRENGTH
-  //
-  // This does NOT affect whether the fractal is confirmed.
-  //
-  // It is only descriptive.
   // ==========================================================
 
   const strength =
     (
-      direction === 'BUY' &&
-      rsiState === 'OVERSOLD'
+      direction ===
+        'BUY' &&
+      rsiState ===
+        'OVERSOLD'
     ) ||
     (
-      direction === 'SELL' &&
-      rsiState === 'OVERBOUGHT'
+      direction ===
+        'SELL' &&
+      rsiState ===
+        'OVERBOUGHT'
     )
       ? 'STRONG'
       : 'STANDARD';
@@ -1161,11 +2101,13 @@ export function buildSignal({
     id,
 
     symbol,
+
     market,
+
     timeframe,
 
     // ========================================================
-    // PRIMARY RACHEL_T SIGNAL
+    // PRIMARY SIGNAL
     // ========================================================
 
     direction,
@@ -1200,14 +2142,105 @@ export function buildSignal({
     },
 
     // ========================================================
-    // CONFIRMATION
+    // FRACTAL CONFIRMATION
     // ========================================================
 
-    confirmed: true,
+    fractalConfirmed:
+      true,
 
-    confirmedCRT: true,
+    // ========================================================
+    // CRT CONFIRMATION
+    // ========================================================
 
-    crtConfirmed: true,
+    confirmed:
+      true,
+
+    confirmedCRT:
+      true,
+
+    crtConfirmed:
+      true,
+
+    // ========================================================
+    // CRT CONFIRMATION DETAILS
+    // ========================================================
+
+    crtConfirmation: {
+      confirmed:
+        true,
+
+      reason:
+        crtConfirmation.reason,
+
+      direction:
+        crtConfirmation.direction,
+
+      signalCandle:
+        crtConfirmation.signalCandle,
+
+      parentCandle:
+        crtConfirmation.parentCandle,
+
+      sweptLow:
+        crtConfirmation.sweptLow ??
+        false,
+
+      sweptHigh:
+        crtConfirmation.sweptHigh ??
+        false,
+
+      closedInside:
+        crtConfirmation.closedInside ??
+        false,
+
+      bodyRatio:
+        crtConfirmation.bodyRatio ??
+        0,
+
+      parentHigh:
+        crtConfirmation.parentHigh ??
+        null,
+
+      parentLow:
+        crtConfirmation.parentLow ??
+        null,
+    },
+
+    // ========================================================
+    // CRT CANDLE COMPATIBILITY
+    // ========================================================
+
+    crtCandle:
+      crtConfirmation.signalCandle ??
+      null,
+
+    crtParentCandle:
+      crtConfirmation.parentCandle ??
+      null,
+
+    crtParentHigh:
+      crtConfirmation.parentHigh ??
+      null,
+
+    crtParentLow:
+      crtConfirmation.parentLow ??
+      null,
+
+    crtClosedInside:
+      crtConfirmation.closedInside ??
+      false,
+
+    crtSweptLow:
+      crtConfirmation.sweptLow ??
+      false,
+
+    crtSweptHigh:
+      crtConfirmation.sweptHigh ??
+      false,
+
+    crtBodyRatio:
+      crtConfirmation.bodyRatio ??
+      0,
 
     // ========================================================
     // MARKET STRUCTURE
@@ -1236,10 +2269,31 @@ export function buildSignal({
       stdDeviation,
 
     // ========================================================
-    // LIQUIDITY SWEEP
+    // LIQUIDITY
+    //
+    // ONLY CONFIRMED FRACTAL HISTORY.
     // ========================================================
 
     liquiditySweep,
+
+    // Explicit compatibility fields.
+    liquiditySwept:
+      liquiditySweep.swept,
+
+    liquidityType:
+      liquiditySweep.type,
+
+    liquidityLevel:
+      liquiditySweep.level,
+
+    previousFractal:
+      liquiditySweep.previousFractal,
+
+    previousFractalPrice:
+      liquiditySweep
+        .previousFractal
+        ?.price ??
+      null,
 
     // ========================================================
     // RSI
@@ -1256,60 +2310,92 @@ export function buildSignal({
     strength,
 
     // ========================================================
-    // EXACT FRACTAL CANDLE TIME
-    //
-    // candleTime is the actual pivot candle, NOT the
-    // confirmation candle.
-    //
-    // This is important because the displayed Fractal Price
-    // belongs to the pivot candle.
+    // FRACTAL PIVOT TIME
     // ========================================================
 
     candleTime:
       latest.pivotTime,
 
+    // ========================================================
+    // FRACTAL CONFIRMATION TIME
+    // ========================================================
+
     confirmationTime:
       latest.confirmationTime,
 
     // ========================================================
-    // PRICE
-    //
-    // Kept for compatibility with existing crtService.js.
-    //
-    // This is NOT used as the Fractal Price.
+    // CRT CANDLE TIME
+    // ========================================================
+
+    crtCandleTime:
+      getCandleTime(
+        crtConfirmation
+          .signalCandle
+      ),
+
+    // ========================================================
+    // PRICE COMPATIBILITY
     // ========================================================
 
     price:
       latest.price,
 
     // ========================================================
-    // FRACTAL HIGH / LOW COMPATIBILITY
+    // FRACTAL HIGH / LOW
     // ========================================================
 
     signalHigh:
-      latest.type === 'TOP'
+      latest.type ===
+      'TOP'
         ? latest.price
         : null,
 
     signalLow:
-      latest.type === 'BOTTOM'
+      latest.type ===
+      'BOTTOM'
         ? latest.price
         : null,
 
     // ========================================================
-    // CRT COMPATIBILITY
-    //
-    // These fields exist so the current service does not
-    // crash if it references them.
-    //
-    // They are NOT used to determine the Rachel_T fractal.
+    // CRT RANGE COMPATIBILITY
     // ========================================================
 
-    parentHigh: null,
+    parentHigh:
+      crtConfirmation.parentHigh ??
+      null,
 
-    parentLow: null,
+    parentLow:
+      crtConfirmation.parentLow ??
+      null,
 
-    closedInside: true,
+    closedInside:
+      crtConfirmation.closedInside ??
+      false,
+
+    // ========================================================
+    // CONFIRMED FRACTAL HISTORY
+    //
+    // Kept in the signal so debugging can show exactly which
+    // fractals were scanned for liquidity.
+    // ========================================================
+
+    confirmedFractals:
+      fractals,
+
+    // ========================================================
+    // LATEST FRACTAL
+    // ========================================================
+
+    latestConfirmedFractal:
+      latest,
+
+    // ========================================================
+    // PREVIOUS SAME-TYPE FRACTAL
+    // ========================================================
+
+    previousConfirmedFractal:
+      liquiditySweep.previousFractal ??
+      null,
   };
 }
 
@@ -1319,10 +2405,8 @@ export function buildSignal({
 //
 // Compatibility wrapper.
 //
-// IMPORTANT:
-// This is NO LONGER the old two-candle CRT detector.
-//
-// The primary confirmation is the Rachel_T filtered fractal.
+// This function performs the same actual CRT confirmation
+// used by buildSignal().
 //
 // ============================================================
 
@@ -1335,93 +2419,416 @@ export function detectCRT(
       candles
     );
 
-  if (closed.length < 5) {
+  if (
+    closed.length < 5
+  ) {
     return null;
   }
 
-  const fractal =
-    getLatestFractal(
+  const fractals =
+    findFractals(
       closed
     );
 
-  if (!fractal) {
+  if (
+    !fractals.length
+  ) {
+    return null;
+  }
+
+  const latest =
+    fractals[
+      fractals.length - 1
+    ];
+
+  if (
+    !latest
+  ) {
     return null;
   }
 
   const direction =
     getDirection(
-      fractal
+      latest
     );
 
-  if (!direction) {
+  if (
+    !direction
+  ) {
     return null;
   }
 
+  const crt =
+    confirmCRTCandle(
+      latest,
+      closed,
+      options
+    );
+
+  if (
+    !crt.confirmed
+  ) {
+    return null;
+  }
+
+  const liquidity =
+    detectFractalLiquiditySweep(
+      closed,
+      fractals,
+      latest
+    );
+
   return {
+    confirmed:
+      true,
+
+    confirmedCRT:
+      true,
+
+    crtConfirmed:
+      true,
+
     direction,
 
     fractalType:
-      fractal.fractalType,
+      latest.fractalType,
 
     fractalPrice:
-      fractal.price,
+      latest.price,
 
-    fractal,
+    fractal:
+      latest,
 
     signal:
-      fractal.confirmationCandle,
+      crt.signalCandle,
 
     parent:
-      fractal.candle,
+      crt.parentCandle,
 
     candleTime:
-      fractal.pivotTime,
+      latest.pivotTime,
 
     confirmationTime:
-      fractal.confirmationTime,
+      latest.confirmationTime,
 
-    // Compatibility fields.
-    parentHigh: null,
-    parentLow: null,
+    crtCandleTime:
+      getCandleTime(
+        crt.signalCandle
+      ),
+
+    // ========================================================
+    // CRT CONFIRMATION
+    // ========================================================
+
+    crtConfirmation:
+      crt,
+
+    // ========================================================
+    // LIQUIDITY
+    //
+    // CONFIRMED FRACTAL HISTORY ONLY.
+    // ========================================================
+
+    liquiditySweep:
+      liquidity,
+
+    liquiditySwept:
+      liquidity.swept,
+
+    previousFractal:
+      liquidity.previousFractal,
+
+    previousFractalPrice:
+      liquidity
+        .previousFractal
+        ?.price ??
+      null,
+
+    // ========================================================
+    // COMPATIBILITY
+    // ========================================================
+
+    parentHigh:
+      crt.parentHigh ??
+      null,
+
+    parentLow:
+      crt.parentLow ??
+      null,
 
     signalHigh:
-      fractal.type === 'TOP'
-        ? fractal.price
+      latest.type ===
+      'TOP'
+        ? latest.price
         : null,
 
     signalLow:
-      fractal.type === 'BOTTOM'
-        ? fractal.price
+      latest.type ===
+      'BOTTOM'
+        ? latest.price
         : null,
 
-    closedInside: true,
+    closedInside:
+      crt.closedInside ??
+      false,
 
     sweptLow:
-      fractal.type === 'BOTTOM',
+      crt.sweptLow ??
+      false,
 
     sweptHigh:
-      fractal.type === 'TOP',
+      crt.sweptHigh ??
+      false,
   };
 }
 
 // ============================================================
-// EXPORT FRACTAL CALCULATORS
+// TEST RACHEL T FRACTAL
+// ============================================================
+
+export function testRachelFractal(
+  candles
+) {
+  return getLatestFractal(
+    candles
+  );
+}
+
+// ============================================================
+// TEST LIQUIDITY
 // ============================================================
 //
-// Exported for debugging/testing.
+// This helper allows you to inspect exactly how Liquidity is
+// being determined.
 //
-// This allows crtService.js or another module to verify that
-// the exact Rachel_T fractal is being detected.
-//
+// ============================================================
+
+export function testLiquidity(
+  candles
+) {
+  const closed =
+    getClosedCandles(
+      candles
+    );
+
+  if (
+    closed.length < 5
+  ) {
+    return null;
+  }
+
+  const fractals =
+    findFractals(
+      closed
+    );
+
+  if (
+    !fractals.length
+  ) {
+    return {
+      liquiditySweep: {
+        swept:
+          false,
+
+        type:
+          'NONE',
+
+        label:
+          'None',
+      },
+
+      confirmedFractals:
+        [],
+    };
+  }
+
+  const latest =
+    fractals[
+      fractals.length - 1
+    ];
+
+  const liquidity =
+    detectFractalLiquiditySweep(
+      closed,
+      fractals,
+      latest
+    );
+
+  return {
+    latestConfirmedFractal:
+      latest,
+
+    previousConfirmedFractal:
+      liquidity.previousFractal,
+
+    liquiditySweep:
+      liquidity,
+
+    confirmedFractals:
+      fractals,
+  };
+}
+
+// ============================================================
+// TEST MARKET ANALYSIS
+// ============================================================
+
+export function testMarketAnalysis(
+  candles
+) {
+  const closed =
+    getClosedCandles(
+      candles
+    );
+
+  if (
+    closed.length < 20
+  ) {
+    return null;
+  }
+
+  const fractals =
+    findFractals(
+      closed
+    );
+
+  const latest =
+    fractals.length
+      ? fractals[
+          fractals.length - 1
+        ]
+      : null;
+
+  const closes =
+    closed.map(
+      (candle) =>
+        Number(
+          candle.close
+        )
+    );
+
+  const rsi =
+    calculateRSI(
+      closes,
+      DEFAULT_RSI_PERIOD
+    );
+
+  const rsiState =
+    getRSIState(
+      rsi,
+      DEFAULT_OVERSOLD,
+      DEFAULT_OVERBOUGHT
+    );
+
+  const stdDeviation =
+    calculateStdDeviation(
+      closed
+    );
+
+  const individualStructure =
+    latest
+      ? calculateMarketStructure(
+          fractals,
+          latest
+        )
+      : {
+          marketStructure:
+            'NEUTRAL',
+
+          structureType:
+            'NONE',
+
+          structurePrice:
+            null,
+        };
+
+  const combinedStructure =
+    calculateCombinedStructure(
+      fractals
+    );
+
+  const marketStructure =
+    combinedStructure.marketStructure !==
+    'NEUTRAL'
+      ? combinedStructure
+      : individualStructure;
+
+  const liquidity =
+    latest
+      ? detectFractalLiquiditySweep(
+          closed,
+          fractals,
+          latest
+        )
+      : null;
+
+  const crtConfirmation =
+    latest
+      ? confirmCRTCandle(
+          latest,
+          closed,
+          {}
+        )
+      : null;
+
+  return {
+    confirmedFractals:
+      fractals,
+
+    latestConfirmedFractal:
+      latest,
+
+    previousConfirmedFractal:
+      liquidity
+        ?.previousFractal ??
+      null,
+
+    liquiditySweep:
+      liquidity,
+
+    crtConfirmation,
+
+    rsi,
+
+    rsiState,
+
+    standardDeviation:
+      stdDeviation,
+
+    stdDeviation,
+
+    marketStructure:
+      marketStructure.marketStructure,
+
+    structureType:
+      marketStructure.structureType,
+  };
+}
+
+// ============================================================
+// PUBLIC STRUCTURE EXPORT
 // ============================================================
 
 export {
   isFilteredTopAt,
+
   isFilteredBottomAt,
+
   calculateStdDeviation,
+
   calculateMarketStructure,
+
   calculateCombinedStructure,
+
   detectFractalLiquiditySweep,
+
+  confirmCRTCandle,
+
+  getClosedCandles,
+
+  getBodyRatio,
+
+  getDirection,
 };
 
 // ============================================================
@@ -1429,17 +2836,45 @@ export {
 // ============================================================
 
 console.log(
-  '[CRT ENGINE] Rachel_T Filtered Top/Bottom Fractal engine loaded.'
+  '[CRT ENGINE] Rachel T Filtered Top/Bottom Fractal engine loaded.'
 );
 
 console.log(
-  '[CRT ENGINE] filterBW=false • Bill Williams filtered fractal logic active.'
+  '[CRT ENGINE] filterBW=false.'
 );
 
 console.log(
-  '[CRT ENGINE] Fractal price = high[2] / low[2].'
+  '[CRT ENGINE] Fractal pivot = high[2] / low[2].'
 );
 
 console.log(
-  '[CRT ENGINE] Fractal confirmation = 2 candles after pivot.'
+  '[CRT ENGINE] Fractal confirmation = 2 closed candles after pivot.'
+);
+
+console.log(
+  '[CRT ENGINE] Liquidity = latest confirmed fractal vs previous confirmed same-type fractal.'
+);
+
+console.log(
+  '[CRT ENGINE] TOP liquidity = latest TOP > previous TOP.'
+);
+
+console.log(
+  '[CRT ENGINE] BOTTOM liquidity = latest BOTTOM < previous BOTTOM.'
+);
+
+console.log(
+  '[CRT ENGINE] Liquidity does NOT use candle wicks.'
+);
+
+console.log(
+  '[CRT ENGINE] Liquidity does NOT use CRT confirmation candle.'
+);
+
+console.log(
+  '[CRT ENGINE] Actual CRT candle confirmation remains separate.'
+);
+
+console.log(
+  '[CRT ENGINE] Currently-forming candles are rejected.'
 );
